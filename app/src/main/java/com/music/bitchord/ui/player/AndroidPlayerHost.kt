@@ -192,6 +192,7 @@ class AndroidPlayerHost(context: Context) : PlayerHost {
                     // loader thread.
                     AppleEnrichment.enrich(merged)
                         .filter { !it.appleCatalogId.isNullOrBlank() }
+                        .distinctBy { it.appleCatalogId }
                 } else {
                     merged
                 }

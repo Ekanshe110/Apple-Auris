@@ -5392,6 +5392,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val enriched = AppleEnrichment.enrich(built)
         return if (AppSettings.appleRichModeEnabled) {
             enriched.filter { !it.appleCatalogId.isNullOrBlank() }
+                .distinctBy { it.appleCatalogId }
         } else {
             enriched
         }
@@ -5578,6 +5579,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     val strictRelated = if (AppSettings.appleRichModeEnabled) {
                         AppleEnrichment.enrich(eligible)
                             .filter { !it.appleCatalogId.isNullOrBlank() }
+                            .distinctBy { it.appleCatalogId }
                     } else {
                         eligible
                     }

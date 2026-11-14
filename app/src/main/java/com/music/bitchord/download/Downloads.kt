@@ -1768,7 +1768,7 @@ object Downloads {
                     provider = route.provider,
                     sourceId = route.sourceId,
                     durationMs = route.durationSec?.let { it * 1_000L },
-                    byteLength = byteLengthOf(context, savedUri).takeIf { it > 0L }
+                    byteLength = byteLengthOf(context, savedUri)?.takeIf { it > 0L }
                         ?: transferredBytes.takeIf { it > 0L },
                 )
                 DownloadSession.done(id)

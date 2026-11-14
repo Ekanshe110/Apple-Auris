@@ -590,8 +590,12 @@ object AudioCache {
             if (previous == AppleValidationState.VALID || previous == AppleValidationState.PENDING) return
             // FAILED means metadata could not be read this time. It is not a
             // verdict on the bytes, so a later open may try again.
-            if (previous == null || previous == AppleValidationState.FAILED) {
-                if (appleValidationStates.replace(key, previous, AppleValidationState.PENDING)) break
+            if (previous == null) {
+                if (appleValidationStates.putIfAbsent(key, AppleValidationState.PENDING) == null) break
+                continue
+            }
+            if (previous == AppleValidationState.FAILED) {
+                if (appleValidationStates.replace(key, AppleValidationState.FAILED, AppleValidationState.PENDING)) break
                 continue
             }
             return

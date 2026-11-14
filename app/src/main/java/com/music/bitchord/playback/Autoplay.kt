@@ -158,6 +158,7 @@ suspend fun loadAutoplayTracks(
     if (com.music.bitchord.data.settings.AppSettings.appleRichModeEnabled) {
         extra = AppleEnrichment.enrich(extra)
             .filter { !it.appleCatalogId.isNullOrBlank() }
+            .distinctBy { it.appleCatalogId }
     }
 
     return Result.success(extra.map {

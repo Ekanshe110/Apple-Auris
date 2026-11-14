@@ -59,6 +59,8 @@ class AddonClient(
 
     private val manifests = SharedCalls<AddonManifest>(MANIFEST_TTL_MS, calls, ::logReuse)
     private val searches = SharedCalls<AddonSearchResponse>(SEARCH_TTL_MS, calls, ::logReuse)
+    private val recommendationFeeds =
+        SharedCalls<AddonRecommendationsResponse>(SEARCH_TTL_MS, calls, ::logReuse)
     private val streams = SharedCalls<AddonStream>(STREAM_TTL_MS, calls, ::logReuse)
     private val libraryPages = SharedCalls<AddonLibraryPage>(LIBRARY_TTL_MS, calls, ::logReuse)
 
@@ -403,7 +405,7 @@ class AddonClient(
     suspend fun recommendations(limit: Int): Result<List<AddonTrack>> {
         if (limit <= 0) return Result.success(emptyList())
         val params = mapOf("limit" to limit.coerceAtMost(100).toString())
-        return searches.get(
+        return recommendationFeeds.get(
             key = "recommendations:${params.toString()}",
             describe = { "▶ addon recommendations(${redact(baseUrl)}) limit=$limit" },
         ) {
