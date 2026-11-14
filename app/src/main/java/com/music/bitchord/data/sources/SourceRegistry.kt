@@ -719,14 +719,14 @@ object SourceRegistry {
                     allowDownloads = detected.manifest.downloadsAllowed,
                     checkValidLossless = detected.manifest.requiresLosslessOutput,
                     // The manifest is the source of truth for vendor identity.
-                    // The role is managed internally; the listener no longer
-                    // chooses it from a second editor switch.
-                    catalogRole = when {
-                        detected.manifest.library?.isAppleMusic == true ->
-                            SourceCatalogRole.APPLE_MUSIC
-                        detected.manifest.library?.provider?.isNotBlank() == true ->
-                            SourceCatalogRole.GENERIC
-                        else -> existing?.catalogRole ?: SourceCatalogRole.GENERIC
+                    // Catalogue identity is a manifest-level capability, not a
+                    // side effect of optional authenticated-library support.
+                    // A missing identity therefore means generic and cannot
+                    // leave an edited source with a stale Apple role.
+                    catalogRole = if (detected.manifest.isAppleMusicCatalog) {
+                        SourceCatalogRole.APPLE_MUSIC
+                    } else {
+                        SourceCatalogRole.GENERIC
                     },
                 ),
             )

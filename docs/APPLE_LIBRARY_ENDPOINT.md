@@ -7,10 +7,10 @@ Apple Auris does **not** call Apple's private web API and does **not** implement
 Library access is available only through an external addon that implements this contract
 and authenticates with a real Apple Music account.
 
-## Manifest capability
+## Manifest identity and capability
 
-Library support is optional. An addon that does not advertise it is not asked for library
-routes.
+`catalogueProvider` is the manifest-level identity of the catalogue served by the addon. It is
+required for an Apple Music addon and is independent of library support:
 
 ```json
 {
@@ -18,6 +18,7 @@ routes.
   "name": "Apple Addon",
   "version": "1.0.0",
   "resources": ["search", "stream"],
+  "catalogueProvider": "apple-music",
   "library": {
     "provider": "apple-music",
     "collections": ["playlists", "albums", "songs"],
@@ -31,8 +32,11 @@ routes.
 }
 ```
 
-- `library` is optional. If absent, library requests fail as unsupported.
-- `provider` must be `apple-music` (case-insensitive).
+- `catalogueProvider` must be `apple-music` (case-insensitive) for Apple Music routing and
+  enrichment. A search-only Apple addon still declares it.
+- `library` is optional. If absent, library requests fail as unsupported, but the addon remains
+  an Apple Music catalogue source.
+- `library.provider` must also be `apple-music` (case-insensitive).
 - `collections` is an explicit list. Currently understood names are `playlists`, `albums`,
   and `songs`.
 - `authentication` describes how the configured credential is presented:
@@ -179,7 +183,8 @@ web-session scraping, a direct Apple sign-in flow, or fabricated library data.
 Authenticated library access therefore requires all of the following:
 
 1. An external addon implementing this document.
-2. A configured addon endpoint that advertises the `apple-music` library capability.
+2. A configured addon endpoint whose manifest declares `"catalogueProvider": "apple-music"` and,
+   for library access, the `apple-music` library capability.
 3. A valid Apple Music account configured with that addon.
 
 Until such an endpoint is configured and reachable, the Library page reports the addon as
@@ -197,7 +202,7 @@ Assumptions for the snippet:
 
 - `resolveSlot(req)` maps the authenticated addon request to the linked account slot.
 - `slot.apple.musicUserToken` and `slot.apple.developerToken` are server-side secrets.
-- `appleFetch` is the server's authenticated Apple API client. It must send:
+- `fetchApplePage` uses only server-constructed `https://amp-api.music.apple.com` URLs and sends:
   - `Authorization: Bearer <developerToken>`
   - `Music-User-Token: <musicUserToken>`
   - `Origin: https://music.apple.com`
@@ -249,8 +254,8 @@ function appleHeaders(slot: Slot): Record<string, string> {
   };
 }
 
-// `appleFetch` must follow Apple's `next` URL and return one normalized page.
-// Never append a client-provided URL without validating its origin.
+// Only server-constructed Apple paths are accepted here. Never append a
+// client-provided URL without validating its origin.
 async function fetchApplePage(
   slot: Slot,
   path: string,
@@ -261,15 +266,28 @@ async function fetchApplePage(
   url.searchParams.set("offset", String(offset));
   url.searchParams.set("limit", String(limit));
   const response = await fetch(url, { headers: appleHeaders(slot) });
-  if (response.status === 401 || response.status === 403) {
+  if (response.status === 401) {
     throw Object.assign(new Error("Apple Music sign-in required"), {
-      status: response.status,
+      status: 401,
       code: "signed_out",
+    });
+  }
+  if (response.status === 403) {
+    throw Object.assign(new Error("Apple Music account lacks library scope"), {
+      status: 403,
+      code: "forbidden",
+    });
+  }
+  if (response.status === 404) {
+    throw Object.assign(new Error("Apple Music library item was not found"), {
+      status: 404,
+      code: "not_found",
     });
   }
   if (response.status === 429) {
     throw Object.assign(new Error("Apple Music rate limit"), {
       status: 429,
+      code: "rate_limited",
       retryAfter: response.headers.get("retry-after") ?? undefined,
     });
   }
@@ -294,6 +312,7 @@ function relationshipId(value: unknown): string {
 
 function item(raw: Record<string, unknown>) {
   const attrs = (raw.attributes ?? {}) as Record<string, unknown>;
+  const artwork = (attrs.artwork ?? {}) as Record<string, unknown>;
   const id = relationshipId(raw.id);
   const catalogId =
     typeof raw.catalogId === "string" && raw.catalogId ? raw.catalogId : id;
@@ -312,7 +331,7 @@ function item(raw: Record<string, unknown>) {
           : "",
     album: typeof attrs.albumName === "string" ? attrs.albumName : "",
     artworkURL:
-      typeof attrs.artwork?.url === "string" ? attrs.artwork.url.replace("{w}", "600") : "",
+      typeof artwork.url === "string" ? artwork.url.replace("{w}", "600") : "",
     duration:
       typeof attrs.durationInMillis === "number"
         ? Math.round(attrs.durationInMillis / 1000)
@@ -321,7 +340,9 @@ function item(raw: Record<string, unknown>) {
 }
 
 function page(raw: ApplePage, offset: number, limit: number) {
-  const items = (raw.data ?? []).map((entry) => item(entry));
+  const data = raw.data;
+  const entries = Array.isArray(data) ? data : data ? [data] : [];
+  const items = entries.map((entry) => item(entry));
   const hasMore = Boolean(raw.next);
   return {
     items,
@@ -341,7 +362,10 @@ export function createAppleLibraryRouter(resolveSlot: (req: Request) => Promise<
       try {
         await fn(req, res);
       } catch (error: any) {
-        const status = error.status === 429 ? 429 : error.status === 400 ? 400 : 502;
+        const upstreamStatus = Number(error.status);
+        const status = [400, 401, 403, 404, 429].includes(upstreamStatus)
+          ? upstreamStatus
+          : 502;
         const code = error.code ?? (status === 400 ? "invalid_request" : "apple_upstream_error");
         if (error.retryAfter) res.setHeader("Retry-After", error.retryAfter);
         res.status(status).json({
@@ -352,7 +376,7 @@ export function createAppleLibraryRouter(resolveSlot: (req: Request) => Promise<
 
   for (const collection of Object.keys(COLLECTIONS) as Collection[]) {
     router.get(
-      `/library/${collection}`,
+      `/${collection}`,
       handle(async (req, res) => {
         const { offset, limit } = pageParams(req);
         const slot = await resolveSlot(req);
@@ -367,11 +391,11 @@ export function createAppleLibraryRouter(resolveSlot: (req: Request) => Promise<
     );
 
     router.get(
-      `/library/${collection}/:id/tracks`,
+      `/${collection}/:id/tracks`,
       handle(async (req, res) => {
         const { offset, limit } = pageParams(req);
         const slot = await resolveSlot(req);
-        const id = encodeURIComponent(req.params.id);
+        const id = encodeURIComponent(String(req.params.id));
         const path =
           collection === "songs"
             ? // Apple's song-library response is the single song relationship.
@@ -379,9 +403,13 @@ export function createAppleLibraryRouter(resolveSlot: (req: Request) => Promise<
               `/v1/me/library/songs/${id}`
             : `/v1/me/library/${COLLECTIONS[collection]}/${id}/tracks`;
         const raw = await fetchApplePage(slot, path, offset, limit);
-        const normalized = collection === "songs"
-          ? { ...raw, data: raw.data ? [raw.data] : [] }
-          : raw;
+        const rawData = raw.data;
+        const normalizedData = collection === "songs"
+          ? rawData && !Array.isArray(rawData)
+            ? [rawData]
+            : rawData ?? []
+          : rawData;
+        const normalized = { ...raw, data: normalizedData };
         res.json(page(normalized, offset, limit));
       }),
     );
@@ -396,6 +424,34 @@ Mount the router behind the addon's existing authentication middleware:
 ```ts
 app.use("/library", requireAddonSlot, createAppleLibraryRouter(resolveLinkedSlot));
 ```
+
+Update the addon's manifest handler as well. The catalogue identity is top-level and must not
+depend on the optional library object:
+
+```ts
+// exact server-side manifest patch
+const manifest = {
+  id: "apple-addon",
+  name: "Apple Addon",
+  version: "1.0.0",
+  resources: ["search", "stream"],
+  catalogueProvider: "apple-music",
+  library: {
+    provider: "apple-music",
+    collections: ["playlists", "albums", "songs"],
+    authentication: {
+      type: "bearer",
+      header: "Authorization",
+      setting: "libraryToken",
+      required: true,
+    },
+  },
+};
+```
+
+A search-only deployment may omit `library`, but must keep `catalogueProvider: "apple-music"`.
+Removing that field changes the addon's catalogue identity to generic; it does not merely disable
+library pages.
 
 ### Server error mapping
 

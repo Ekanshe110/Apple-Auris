@@ -8,6 +8,8 @@ import com.music.bitchord.data.sources.addon.AddonClient
 import com.music.bitchord.data.sources.addon.AddonLibraryItem
 import com.music.bitchord.data.sources.addon.AddonUnsupportedException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.Locale
 
 /** The account-library collections exposed by the Apple addon contract. */
@@ -39,6 +41,18 @@ sealed interface AppleLibraryState {
  */
 class AppleLibraryRepository(private val config: SourceConfig) {
 
+    /**
+     * The one client for this repository's config.
+     *
+     * The manifest is needed to learn which setting holds the credential. The
+     * same client is reused for every collection, track page, and load-more
+     * request; its current manifest names the credential setting on each
+     * request, so a server-side setting rename cannot leave the old account
+     * bound.
+     */
+    private val clientLock = Mutex()
+    private var client: AddonClient? = null
+
     suspend fun load(
         collection: AppleLibraryCollection,
         offset: Int = 0,
@@ -66,20 +80,33 @@ class AppleLibraryRepository(private val config: SourceConfig) {
         return page.state(offset)
     }
 
-    private suspend fun client(): Result<AddonClient> = try {
-        val probe = AddonClient(config.baseUrl)
-        val manifest = probe.manifest().getOrThrow()
-        val capability = manifest.library
-            ?: throw LibraryUnconfiguredException()
-        if (!capability.isAppleMusic) throw LibraryUnconfiguredException()
-        val credential = capability.authentication?.setting
-            ?.takeIf { it.isNotBlank() }
-            ?.let { config.settings[it] }
-        Result.success(AddonClient(config.baseUrl, credential))
-    } catch (cancelled: CancellationException) {
-        throw cancelled
-    } catch (failure: Throwable) {
-        Result.failure(failure)
+    private suspend fun client(): Result<AddonClient> = clientLock.withLock {
+        try {
+            val candidate = client ?: AddonClient(config.baseUrl).also { created ->
+                // Prime the manifest before the credential can be bound: the
+                // manifest names the setting which holds it.
+                created.manifest().getOrThrow()
+            }
+            val manifest = candidate.manifest().getOrThrow()
+            val capability = manifest.library
+                ?: throw LibraryUnconfiguredException()
+            if (!manifest.isAppleMusicCatalog) throw LibraryUnconfiguredException()
+            if (!capability.isAppleMusic) throw LibraryUnconfiguredException()
+            // Re-read the setting from the current manifest on every library
+            // request. A later manifest may name a different setting, and a
+            // client permanently bound to the first one would keep sending the
+            // old account's credential.
+            val setting = capability.authentication?.setting
+                ?.takeIf { it.isNotBlank() }
+                ?: "libraryToken"
+            candidate.bindLibraryCredential(config.settings[setting])
+            client = candidate
+            Result.success(candidate)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            Result.failure(failure)
+        }
     }
 
     private fun Throwable.state(): AppleLibraryState = when (this) {

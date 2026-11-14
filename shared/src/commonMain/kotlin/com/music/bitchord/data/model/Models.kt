@@ -396,6 +396,13 @@ data class ShelfItem(
      * Mode enriched it while the shelf was created.
      */
     val appleCatalogId: String? = null,
+    /**
+     * Why this discovery card could not be matched to an exact Apple track.
+     *
+     * Carried with the card so a failed enrichment stays visible and reaches
+     * the queue instead of disappearing and allowing a generic substitute.
+     */
+    val appleLookupError: String? = null,
 )
 
 /** The signed-in Google account, as YouTube Music reports it. */

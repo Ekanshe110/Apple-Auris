@@ -1,5 +1,10 @@
 package com.music.bitchord
 
+import com.music.bitchord.data.apple.AppleLibraryCollection
+import com.music.bitchord.data.apple.AppleLibraryRepository
+import com.music.bitchord.data.apple.AppleLibraryState
+import com.music.bitchord.data.sources.SourceConfig
+import com.music.bitchord.data.sources.SourceKind
 import com.music.bitchord.data.sources.addon.AddonAuthenticationException
 import com.music.bitchord.data.sources.addon.AddonClient
 import com.music.bitchord.data.sources.addon.AddonUnavailable
@@ -37,6 +42,7 @@ class AddonLibraryClientTest {
 
         val manifest = AddonClient(server.url("/").toString(), libraryCredential = "secret-token").manifest().getOrThrow()
 
+        assertTrue(manifest.isAppleMusicCatalog)
         val library = manifest.library!!
         assertTrue(library.isAppleMusic)
         assertEquals(
@@ -46,6 +52,23 @@ class AddonLibraryClientTest {
         val authentication = library.authentication!!
         assertEquals("bearer", authentication.type)
         assertTrue(authentication.required)
+    }
+
+    @Test
+    fun `search only Apple addon keeps catalogue identity without library capability`() = runBlocking {
+        server.enqueue(
+            json(
+                """
+                {"id":"apple-search","name":"Apple Search","resources":["search","stream"],
+                 "catalogueProvider":"apple-music"}
+                """.trimIndent(),
+            ),
+        )
+
+        val manifest = AddonClient(server.url("/").toString()).manifest().getOrThrow()
+
+        assertTrue(manifest.isAppleMusicCatalog)
+        assertNull(manifest.library)
     }
 
     @Test
@@ -122,6 +145,74 @@ class AddonLibraryClientTest {
     }
 
     @Test
+    fun `repository reuses manifest and library page across loads`() = runBlocking {
+        server.enqueue(json(manifestJson))
+        server.enqueue(json("""{"items":[],"offset":0,"limit":50,"hasMore":false}"""))
+
+        val repository = AppleLibraryRepository(
+            SourceConfig(
+                kind = SourceKind.ADDON,
+                baseUrl = server.url("/").toString(),
+                settings = mapOf("libraryToken" to "account-one"),
+            ),
+        )
+
+        assertTrue(repository.load(AppleLibraryCollection.PLAYLISTS) is AppleLibraryState.Empty)
+        assertTrue(repository.load(AppleLibraryCollection.PLAYLISTS) is AppleLibraryState.Empty)
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test
+    fun `repository keeps authentication failure distinct from empty library`() = runBlocking {
+        server.enqueue(json(manifestJson))
+        server.enqueue(
+            json("""{"error":{"code":"signed_out","message":"Apple Music sign-in required"}}""")
+                .setResponseCode(401),
+        )
+
+        val repository = AppleLibraryRepository(
+            SourceConfig(
+                kind = SourceKind.ADDON,
+                baseUrl = server.url("/").toString(),
+                settings = mapOf("libraryToken" to "account-one"),
+            ),
+        )
+
+        assertTrue(repository.load(AppleLibraryCollection.PLAYLISTS) is AppleLibraryState.SignedOut)
+    }
+
+    @Test
+    fun `library page cache is separated by credential`() = runBlocking {
+        server.enqueue(json(manifestJson))
+        server.enqueue(json("""{"items":[]}"""))
+
+        val client = AddonClient(server.url("/").toString(), libraryCredential = "account-one")
+        client.libraryPlaylists().getOrThrow()
+
+        client.bindLibraryCredential("account-two")
+        server.enqueue(json("""{"items":[]}"""))
+        client.libraryPlaylists().getOrThrow()
+
+        assertEquals(3, server.requestCount)
+    }
+
+    @Test
+    fun `clear drops cached library pages`() = runBlocking {
+        server.enqueue(json(manifestJson))
+        server.enqueue(json("""{"items":[]}"""))
+
+        val client = AddonClient(server.url("/").toString(), libraryCredential = "account-one")
+        client.libraryPlaylists().getOrThrow()
+        client.clear()
+
+        server.enqueue(json(manifestJson))
+        server.enqueue(json("""{"items":[]}"""))
+        client.libraryPlaylists().getOrThrow()
+
+        assertEquals(4, server.requestCount)
+    }
+
+    @Test
     fun `signed out authentication error preserves machine readable code`() = runBlocking {
         server.enqueue(json(manifestJson))
         server.enqueue(
@@ -177,6 +268,25 @@ class AddonLibraryClientTest {
     }
 
     @Test
+    fun `library capability cannot replace top level Apple catalogue identity`() = runBlocking {
+        server.enqueue(
+            json(
+                """
+                {"id":"apple-library-only","name":"Apple Library Only","resources":["search","stream"],
+                 "library":{"provider":"apple-music","collections":["songs"]}}
+                """.trimIndent(),
+            ),
+        )
+
+        val unsupported = AddonClient(server.url("/").toString(), libraryCredential = "secret-token")
+            .librarySongs()
+            .exceptionOrNull()
+
+        assertTrue(unsupported is AddonUnsupportedException)
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
     fun `unsupported library is distinct from addon server error`() = runBlocking {
         server.enqueue(json("""{"id":"catalog","name":"Catalog","resources":["search"]}"""))
 
@@ -204,6 +314,7 @@ class AddonLibraryClientTest {
               "name":"Apple Addon",
               "version":"1.0.0",
               "resources":["search","stream"],
+              "catalogueProvider":"apple-music",
               "library":{
                 "provider":"apple-music",
                 "collections":["playlists","albums","songs"],

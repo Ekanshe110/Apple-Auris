@@ -670,6 +670,34 @@ private fun resolvePlaybackUri(uriString: String, localPath: String?): String {
  * simply omits it and the match is made on title and artist alone, as it was
  * before.
  */
+/** URI marker for a discovery row that must resolve through exact Apple identity. */
+internal const val APPLE_STRICT_PARAMETER = "appleStrict"
+
+/**
+ * Whether lyrics lookup must stay on Apple's exact identity.
+ *
+ * A discovery row in Apple mode without an exact catalogue id cannot borrow
+ * title/artist lyrics from another recording. Source-backed Apple rows are
+ * strict even when their catalogue id is absent because their stream id is
+ * already exact.
+ */
+internal fun Song.requiresStrictAppleIdentity(): Boolean {
+    if (!AppSettings.appleRichModeEnabled) return false
+    val sourceTrack = SourceRegistry.parseTrackKey(videoId)
+    return if (sourceTrack != null) {
+        SourceRegistry.isAppleStrictRouting(sourceTrack.first)
+    } else {
+        // Every discovery row in Apple mode is an Apple identity, not a generic
+        // title/artist row. When an exact id exists, lyrics use only that id;
+        // when it does not, strict mode forbids a name-based fallback.
+        true
+    }
+}
+
+/** A watch URI that refuses generic YouTube/source substitution. */
+internal fun Song.strictAppleWatchUri(): String =
+    "bitchord://watch?v=$videoId${matchQuery()}&$APPLE_STRICT_PARAMETER=1"
+
 private fun Song.matchQuery(): String = buildString {
     append("&n=").append(Uri.encode(title))
     append("&a=").append(Uri.encode(artist))
@@ -801,7 +829,12 @@ fun Song.toMediaItem(parentBrowseId: String? = null, playLocalFile: Boolean = tr
             SourceRegistry.appleCatalogConfig()?.id?.let { appleConfigId ->
                 SourceRegistry.trackUri(appleConfigId, exactAppleCatalogId)
                     .let { "$it${matchQuery()}" }
-            } ?: "bitchord://watch?v=$videoId${matchQuery()}"
+            } ?: strictAppleWatchUri()
+        // A discovery row in Apple mode without an exact catalogue id is
+        // deliberately not playable through generic watch resolution. The
+        // marker survives queue restoration and makes the failure explicit
+        // instead of allowing a name-matched substitute.
+        AppSettings.appleRichModeEnabled -> strictAppleWatchUri()
         // A track the listener reverted by hand stays reverted — see
         // [OriginalVersion]. Applied here rather than at the one menu that
         // reverts, because "stays" has to mean the next queue entry built for

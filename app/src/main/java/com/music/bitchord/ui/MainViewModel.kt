@@ -2050,7 +2050,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             YtMusicRepository.homeRecentlyPlayed().onSuccess { shelf ->
                 // A full load that started meanwhile fetches Recents itself.
                 if (!isCurrentHomeLoad(identity, generation)) return@onSuccess
-                shelf?.let { publishHomeShelves(listOf(it), prepend = true) }
+                shelf?.let {
+                    publishHomeShelves(
+                        shelves = listOf(it),
+                        identity = identity,
+                        generation = generation,
+                        prepend = true,
+                    )
+                }
             }
         }
     }
@@ -2415,7 +2422,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         .onSuccess { feed ->
                             if (!isCurrentHomeLoad(identity, generation)) return@onSuccess
                             homeContinuation = feed.continuation
-                            publishHomeShelves(feed.shelves)
+                            publishHomeShelves(feed.shelves, identity, generation)
                         }
                         .onFailure { failure ->
                             if (isCurrentHomeLoad(identity, generation) && _home.value !is UiState.Success) {
@@ -2432,7 +2439,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         .onSuccess { shelf ->
                             if (isCurrentHomeLoad(identity, generation)) {
                                 _homeRecentlyPlayedLoading.value = false
-                                shelf?.let { publishHomeShelves(listOf(it), prepend = true) }
+                                shelf?.let {
+                                    publishHomeShelves(listOf(it), identity, generation, prepend = true)
+                                }
                             }
                         }
                         .onFailure {
@@ -2444,7 +2453,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 launch {
                     try {
                         YtMusicRepository.homeSupplement(browseId).onSuccess { shelves ->
-                            if (isCurrentHomeLoad(identity, generation)) publishHomeShelves(shelves)
+                            if (isCurrentHomeLoad(identity, generation)) {
+                                publishHomeShelves(shelves, identity, generation)
+                            }
                         }
                     } finally {
                         homeShelfRequestSettled(identity, generation)
@@ -2483,7 +2494,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             _homeHeader.value = outcome.header
-            publishHomeShelves(outcome.shelves)
+            publishHomeShelves(outcome.shelves, identity, generation)
         }
     }
 
@@ -2507,13 +2518,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** [refreshHome]'s Spotify half: the rows, read again rather than carried on. */
-    private suspend fun refreshSpotifyHome(identity: String?) {
+    private suspend fun refreshSpotifyHome(identity: String?, generation: Long) {
         val outcome = runCatching { SpotifyHomeSource.page(homeFacet.value) }.getOrNull() ?: return
-        if (identity != listenerKey() || outcome.isEmpty) return
-        homeSeenTitles.clear()
+        if (!isCurrentHomeLoad(identity, generation) || outcome.isEmpty) return
         _homeHeader.value = outcome.header
-        _homeRaw.value = outcome.shelves
-        publishHome()
+        publishHomeShelves(outcome.shelves, identity, generation, replace = true)
     }
 
     /**
@@ -2528,8 +2537,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun isCurrentHomeLoad(identity: String?, generation: Long) =
         identity == listenerKey() && generation == homeLoadGeneration.get()
 
-    private suspend fun publishHomeShelves(shelves: List<HomeShelf>, prepend: Boolean = false) {
+    private suspend fun publishHomeShelves(
+        shelves: List<HomeShelf>,
+        identity: String?,
+        generation: Long,
+        prepend: Boolean = false,
+        replace: Boolean = false,
+    ) {
         val visible = enrichHomeShelves(shelves).withoutBlockedArtists()
+        // Enrichment may wait on bounded Apple lookups. A newer home load can
+        // take over meanwhile; the older answer must not append stale shelves.
+        if (!isCurrentHomeLoad(identity, generation)) return
+        if (replace) {
+            if (visible.isEmpty()) return
+            homeSeenTitles.clear()
+            homeSeenTitles.addAll(visible.map { it.title.lowercase(Locale.ROOT) })
+            _homeRaw.value = visible
+            publishHome()
+            return
+        }
         val existing = _homeRaw.value
         if (prepend) {
             // YouTube's core home can also contain a stale "Recently played"
@@ -2573,6 +2599,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     val id = item.videoId
                     if (id == null) item else item.copy(
                         appleCatalogId = enriched[id]?.appleCatalogId,
+                        appleLookupError = enriched[id]?.appleLookupError,
                     )
                 },
             )
@@ -2652,26 +2679,44 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Refreshes the core feed without blanking the current Play page first. */
     private suspend fun refreshHome(identity: String?) = coroutineScope {
+        // A refresh is a newer home publication than any load already in
+        // flight. Claiming a generation keeps that older load from appending
+        // its stale shelves after the refreshed feed has landed.
+        val generation = homeLoadGeneration.incrementAndGet()
+        val previousContinuation = homeContinuation
+        homeContinuation = null
+        _homePendingShelves.value = 0
+        _homeRecentlyPlayedLoading.value = _signedIn.value
+        // A refresh owns a new generation, so any older load-more request is
+        // now stale. Clear its flag here; the stale request must not own the
+        // next page's loading state.
+        _homeLoadingMore.value = false
         // Spotify's rows are read rather than continued, so a refresh is the
         // whole of what it does — see [refreshSpotifyHome].
         if (AppSettings.homeProvider.value == HomeProvider.SPOTIFY) {
-            refreshSpotifyHome(identity)
+            _homeRecentlyPlayedLoading.value = false
+            refreshSpotifyHome(identity, generation)
             return@coroutineScope
         }
         val recent = if (_signedIn.value) async { YtMusicRepository.homeRecentlyPlayed() } else null
         YtMusicRepository.home().onSuccess { feed ->
-            if (identity != listenerKey()) return@onSuccess
+            if (!isCurrentHomeLoad(identity, generation)) return@onSuccess
             homeContinuation = feed.continuation
-            homeSeenTitles.clear()
-            val shelves = feed.shelves.withoutBlockedArtists().withoutRepeatsOf(emptyList())
-                .filter { homeSeenTitles.add(it.title.lowercase(Locale.ROOT)) }
-            if (shelves.isNotEmpty()) {
-                _homeRaw.value = shelves
-                publishHome()
-            }
+            publishHomeShelves(feed.shelves, identity, generation, replace = true)
+        }.onFailure {
+            // The old feed is still visible when a refresh fails. Keep its
+            // continuation so that feed can still be paged.
+            if (isCurrentHomeLoad(identity, generation)) homeContinuation = previousContinuation
         }
         recent?.await()?.onSuccess { shelf ->
-            if (identity == listenerKey()) shelf?.let { publishHomeShelves(listOf(it), prepend = true) }
+            if (isCurrentHomeLoad(identity, generation)) {
+                _homeRecentlyPlayedLoading.value = false
+                shelf?.let {
+                    publishHomeShelves(listOf(it), identity, generation, prepend = true)
+                }
+            }
+        }?.onFailure {
+            if (isCurrentHomeLoad(identity, generation)) _homeRecentlyPlayedLoading.value = false
         }
     }
 
@@ -2695,10 +2740,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val token = homeContinuation ?: return
         if (_homeLoadingMore.value) return
         val identity = listenerKey()
+        val generation = homeLoadGeneration.get()
         _homeLoadingMore.value = true
         viewModelScope.launch {
             YtMusicRepository.moreHome(token).onSuccess { feed ->
-                if (identity == listenerKey()) {
+                if (isCurrentHomeLoad(identity, generation)) {
                     val existing = _homeRaw.value
                     val added = feed.shelves.withoutBlockedArtists().withoutRepeatsOf(existing)
                         .filter { homeSeenTitles.add(it.title.lowercase(Locale.ROOT)) }
@@ -2712,7 +2758,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
             }
-            if (identity == listenerKey()) _homeLoadingMore.value = false
+            if (isCurrentHomeLoad(identity, generation)) _homeLoadingMore.value = false
         }
     }
 

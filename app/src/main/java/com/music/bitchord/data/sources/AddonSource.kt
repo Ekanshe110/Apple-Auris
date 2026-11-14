@@ -96,12 +96,13 @@ class AddonSource(
     }
 
     private fun recordPolicy(manifest: AddonManifest) {
-        val role = manifest.library?.let { capability ->
-            when {
-                capability.isAppleMusic -> com.music.bitchord.data.sources.SourceCatalogRole.APPLE_MUSIC
-                capability.provider.isNotBlank() -> com.music.bitchord.data.sources.SourceCatalogRole.GENERIC
-                else -> null
-            }
+        // Catalogue identity is explicit and independent of library support.
+        // Always publish it, including generic: otherwise editing an Apple
+        // source to an addon without that identity leaves the old role behind.
+        val role = if (manifest.isAppleMusicCatalog) {
+            com.music.bitchord.data.sources.SourceCatalogRole.APPLE_MUSIC
+        } else {
+            com.music.bitchord.data.sources.SourceCatalogRole.GENERIC
         }
         SourceRegistry.updatePolicy(
             configId = config.id,

@@ -5,6 +5,7 @@ import com.music.bitchord.data.model.Song
 import com.music.bitchord.data.model.durationMillis
 import com.music.bitchord.data.settings.AppSettings
 import com.music.bitchord.data.sources.AddonSource
+import com.music.bitchord.data.sources.SourceConfig
 import com.music.bitchord.data.sources.SourceRegistry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -17,6 +18,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
+import java.security.MessageDigest
 import java.util.Collections
 import java.util.Locale
 
@@ -48,6 +50,7 @@ object AppleEnrichment {
     private val inFlight = mutableMapOf<LookupKey, Deferred<Result<String?>>>()
 
     private data class LookupKey(
+        val sourceIdentity: String,
         val title: String,
         val artist: String,
         val durationSec: Long?,
@@ -73,7 +76,14 @@ object AppleEnrichment {
      * discovery rows and must not be sent to Apple.
      */
     suspend fun enrich(songs: List<Song>): List<Song> {
-        if (songs.isEmpty() || !AppSettings.appleRichModeEnabled) return songs
+        if (songs.isEmpty()) return songs
+        if (!AppSettings.appleRichModeEnabled) {
+            // Errors describe an active Apple attempt. Once the mode is off,
+            // an old persisted failure must not keep colouring the row.
+            return songs.map { song ->
+                if (song.appleLookupError != null) song.copy(appleLookupError = null) else song
+            }
+        }
 
         val config = SourceRegistry.appleCatalogConfig()
         if (config == null) {
@@ -98,17 +108,19 @@ object AppleEnrichment {
 
         val targets = songs.filter { it.needsAppleLookup() }
         if (targets.isEmpty()) return songs
+        val sourceIdentity = sourceIdentity(config)
 
         val results = coroutineScope {
-            targets.distinctBy { it.appleLookupKey() }.map { song ->
+            targets.distinctBy { it.appleLookupKey(sourceIdentity) }.map { song ->
                 async {
-                    song.appleLookupKey() to lookup(song, source)
+                    val key = song.appleLookupKey(sourceIdentity)
+                    key to lookup(song, source, key)
                 }
             }.awaitAll().toMap()
         }
 
         return songs.map { song ->
-            val result = results[song.appleLookupKey()] ?: return@map song
+            val result = results[song.appleLookupKey(sourceIdentity)] ?: return@map song
             result.fold(
                 onSuccess = { appleId ->
                     if (appleId.isNullOrBlank()) {
@@ -134,9 +146,8 @@ object AppleEnrichment {
     }
 
     /** Whether this row is a discovery row which still needs Apple's catalogue id. */
-    private fun Song.needsAppleLookup(): Boolean =
+    internal fun Song.needsAppleLookup(): Boolean =
         appleCatalogId == null &&
-            appleLookupError == null &&
             localUri == null &&
             !videoId.startsWith("http://") &&
             !videoId.startsWith("https://") &&
@@ -144,14 +155,32 @@ object AppleEnrichment {
             !videoId.startsWith("file://") &&
             SourceRegistry.parseTrackKey(videoId) == null
 
-    private fun Song.appleLookupKey(): LookupKey = LookupKey(
+    private fun Song.appleLookupKey(sourceIdentity: String): LookupKey = LookupKey(
+        sourceIdentity = sourceIdentity,
         title = normalized(title),
         artist = normalized(artist),
         durationSec = durationMillis().takeIf { it > 0 }?.div(1000),
     )
 
-    private suspend fun lookup(song: Song, source: AddonSource): Result<String?> {
-        val key = song.appleLookupKey()
+    /** A private, collision-resistant identity for this addon and account. */
+    internal fun sourceIdentity(config: SourceConfig): String {
+        val material = buildString {
+            append(config.id).append('\u0000')
+            append(config.baseUrl).append('\u0000')
+            config.settings.toSortedMap().forEach { (key, value) ->
+                append(key).append('\u0000').append(value).append('\u0000')
+            }
+        }
+        return MessageDigest.getInstance("SHA-256")
+            .digest(material.toByteArray(Charsets.UTF_8))
+            .joinToString("") { byte -> (byte.toInt() and 0xff).toString(16).padStart(2, '0') }
+    }
+
+    private suspend fun lookup(
+        song: Song,
+        source: AddonSource,
+        key: LookupKey,
+    ): Result<String?> {
         cached(key)?.let { return it.result }
 
         val deferred = inFlightLock.withLock {

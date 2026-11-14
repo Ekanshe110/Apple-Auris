@@ -1689,6 +1689,23 @@ class PlaybackService : MediaLibraryService() {
                     .setHttpRequestHeaders(headers)
                     .build()
             }
+            // Generic watch resolution can choose another recording by name.
+            // It is therefore forbidden for a strict Apple row, whether the
+            // marker was attached when the item was queued or Apple mode is
+            // active now. The exact Apple catalogue id must reach the source
+            // URI above; no Spotify/YouTube fallback belongs here.
+            //
+            // The Automix analysis request above is exempt: it is an
+            // analysis-only marker that never reaches the speaker and asks
+            // YouTube only for bytes used to inspect the playing recording.
+            if (
+                dataSpec.uri.getQueryParameter(APPLE_STRICT_PARAMETER) == "1" ||
+                AppSettings.appleRichModeEnabled
+            ) {
+                throw java.io.IOException(
+                    "Apple Music catalogue id is unavailable for '${SourceResolver.targetIn(dataSpec.uri).title}'",
+                )
+            }
             // An upgraded item carries a marker and its stream has already
             // been found — see [QualityUpgrade]. Answered before anything
             // else, and without re-resolving: this exact URL is what the
@@ -9485,7 +9502,7 @@ class PlaybackService : MediaLibraryService() {
                     order = AppSettings.lyricsSourceOrder.value,
                     prioritizeSyllableSync = AppSettings.prioritizeSyllableSync.value,
                     appleSongId = currentSong.appleCatalogId,
-                    strictApple = SourceRegistry.isAppleTrack(currentSong.videoId),
+                    strictApple = currentSong.requiresStrictAppleIdentity(),
                 )
                 lines = found?.lines
             }

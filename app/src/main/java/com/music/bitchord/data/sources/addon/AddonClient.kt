@@ -13,6 +13,7 @@ import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 /**
@@ -37,8 +38,12 @@ class AddonClient(
      * Optional credential for an addon library endpoint. It is sent only in
      * the authentication header declared by the manifest, never in the URL.
      */
-    private val libraryCredential: String? = null,
+    libraryCredential: String? = null,
 ) {
+
+    /** The credential used by library requests, bound once the manifest names its setting. */
+    @Volatile
+    private var boundLibraryCredential: String? = libraryCredential
 
     /** Where this addon lives, with `/manifest.json` and trailing slashes off. */
     val baseUrl: String = normalizeBase(rawBaseUrl)
@@ -242,6 +247,11 @@ class AddonClient(
             ?: return Result.failure(
                 AddonUnsupportedException("This addon does not advertise library support"),
             )
+        if (!manifest.isAppleMusicCatalog) {
+            return Result.failure(
+                AddonUnsupportedException("This addon does not identify as an Apple Music catalogue"),
+            )
+        }
         if (!capability.isAppleMusic) {
             return Result.failure(
                 AddonUnsupportedException("This addon does not advertise the Apple Music library"),
@@ -255,13 +265,24 @@ class AddonClient(
         return Result.success(capability)
     }
 
+    /**
+     * Bind the credential after the manifest has named the setting holding it.
+     *
+     * The manifest is cached by this same client, so binding after that lookup
+     * avoids fetching it a second time. The credential is kept in memory only
+     * and is never put in a cache key or a log line.
+     */
+    internal fun bindLibraryCredential(credential: String?) {
+        boundLibraryCredential = credential
+    }
+
     /** Build the credential header without ever putting the credential in the query. */
     private fun libraryHeaders(capability: AddonLibraryCapability): Result<Map<String, String>> {
         val authentication = capability.authentication
             ?: return Result.success(emptyMap())
         val type = authentication.type.lowercase()
         if (type == AddonLibraryAuthentication.TYPE_NONE) return Result.success(emptyMap())
-        val credential = libraryCredential?.takeIf { it.isNotBlank() }
+        val credential = boundLibraryCredential?.takeIf { it.isNotBlank() }
         if (credential == null) {
             if (!authentication.required) return Result.success(emptyMap())
             return Result.failure(
@@ -298,9 +319,11 @@ class AddonClient(
         url: String,
         headers: Map<String, String>,
     ): Result<AddonLibraryPage> = libraryPages.get(
-        // The credential is part of the identity, but never part of the key in
-        // readable form. Two linked accounts must not share a cached page.
-        key = "$url|${headers.hashCode()}",
+        // The URL and authentication headers are part of the request identity.
+        // Hash the whole identity so neither a token-bearing URL nor the
+        // credential can be read from a cache key. Two linked accounts must not
+        // share a cached page.
+        key = libraryPageKey(url, headers),
         describe = { "▶ addon library page(${redact(url)})" },
     ) {
         runCatching {
@@ -310,6 +333,28 @@ class AddonClient(
             if (failure is CancellationException) throw failure
             TrackLog.w(TAG, "  ✗ addon library call failed ${redact(url)}: ${failure.message}")
         }
+    }
+
+    /** A collision-resistant, non-readable identity for one library request. */
+    private fun libraryPageKey(url: String, headers: Map<String, String>): String {
+        val parts = ArrayList<String>(2 + headers.size * 2)
+        parts += url
+        headers.toSortedMap().forEach { (name, value) ->
+            parts += name
+            parts += value
+        }
+        val digest = MessageDigest.getInstance("SHA-256")
+        parts.forEach { part ->
+            val bytes = part.toByteArray(Charsets.UTF_8)
+            digest.update(byteArrayOf(
+                (bytes.size ushr 24).toByte(),
+                (bytes.size ushr 16).toByte(),
+                (bytes.size ushr 8).toByte(),
+                bytes.size.toByte(),
+            ))
+            digest.update(bytes)
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     // ── Search ────────────────────────────────────────────────────────────
@@ -666,6 +711,7 @@ class AddonClient(
         manifests.clear()
         searches.clear()
         streams.clear()
+        libraryPages.clear()
         quietUntilMs = 0L
     }
 

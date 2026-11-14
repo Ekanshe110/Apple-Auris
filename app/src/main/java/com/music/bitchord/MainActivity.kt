@@ -168,6 +168,7 @@ import com.music.bitchord.data.model.SearchHistoryEntity
 import com.music.bitchord.ui.onboarding.OnboardingState
 import com.music.bitchord.ui.onboarding.SetupWizard
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import com.music.bitchord.data.model.durationMillis
 import com.music.bitchord.data.scrobbling.LastFM
@@ -236,6 +237,7 @@ import com.music.bitchord.playback.toggleShuffle
 import com.music.bitchord.playback.UpgradeOutcome
 import com.music.bitchord.playback.upgradeQuality
 import com.music.bitchord.playback.revertToOriginal
+import com.music.bitchord.playback.requiresStrictAppleIdentity
 import com.music.bitchord.playback.swapToVersion
 import com.music.bitchord.playback.smart.VersionAudioAligner
 import com.music.bitchord.download.DownloadSession
@@ -1132,21 +1134,25 @@ private fun BitChordApp(
     val libraryState by viewModel.library.collectAsStateWithLifecycle()
     val filter by viewModel.filter.collectAsStateWithLifecycle()
     val searchSource by viewModel.searchSource.collectAsStateWithLifecycle()
-    // Keep this as one captured value. The root composable already sits close
-    // to dex's 255-register constructor limit, so collecting the toggle and
-    // source list separately would add avoidable captures to nested lambdas.
-    val appleCatalogState = remember {
-        derivedStateOf {
-            val config = SourceRegistry.configs.value.firstOrNull {
+    // Collect the selected Apple config as Compose state. Reading
+    // StateFlow.value inside derivedStateOf does not subscribe to either
+    // flow, so the search source stayed unavailable after the provider or an
+    // addon config changed.
+    val appleCatalogConfig by SourceRegistry.configs
+        .map { configs ->
+            configs.firstOrNull {
                 it.kind == com.music.bitchord.data.sources.SourceKind.ADDON &&
                     it.enabled && it.isComplete &&
                     it.catalogRole == com.music.bitchord.data.sources.SourceCatalogRole.APPLE_MUSIC
             }
-            AppleCatalogUiState(
-                ready = AppSettings.appleRichModeEnabled && config != null,
-                config = config,
-            )
         }
+        .collectAsStateWithLifecycle(initialValue = null)
+    val appleCatalogState = remember(appleCatalogConfig, homeProvider) {
+        AppleCatalogUiState(
+            ready = homeProvider == com.music.bitchord.data.settings.HomeProvider.APPLE &&
+                appleCatalogConfig != null,
+            config = appleCatalogConfig,
+        )
     }
     val libraryResults by viewModel.libraryResults.collectAsStateWithLifecycle()
     LaunchedEffect(selectedTab) {
@@ -1499,7 +1505,7 @@ private fun BitChordApp(
                 it.albumName,
                 it.localUri,
                 it.appleCatalogId,
-                SourceRegistry.isAppleTrack(it.videoId),
+                it.requiresStrictAppleIdentity(),
             )
         }
     }
@@ -2540,6 +2546,7 @@ private fun BitChordApp(
                 artist = InnertubeParser.artistFromSubtitle(item.subtitle),
                 thumbnailUrl = item.thumbnailUrl,
                 appleCatalogId = item.appleCatalogId,
+                appleLookupError = item.appleLookupError,
             )
         }
     }
@@ -4531,15 +4538,9 @@ private fun BitChordApp(
                                 state = moodGenreShelves,
                                 listState = moodGenreListState,
                                 onItemClick = { item ->
-                                    item.videoId?.let { videoId ->
+                                    shelfSong(item)?.let { song ->
                                         playRadio(
-                                            Song(
-                                                videoId = videoId,
-                                                title = item.title,
-                                                artist = InnertubeParser.artistFromSubtitle(item.subtitle),
-                                                thumbnailUrl = item.thumbnailUrl,
-                                                appleCatalogId = item.appleCatalogId,
-                                            ),
+                                            song,
                                             QueueSource(
                                                 category.title,
                                                 PlaybackSourceType.EXPLORE,
@@ -5033,15 +5034,9 @@ private fun BitChordApp(
                                 state = moodGenreShelves,
                                 listState = moodGenreListState,
                                 onItemClick = { item ->
-                                    item.videoId?.let { videoId ->
+                                    shelfSong(item)?.let { song ->
                                         playRadio(
-                                            Song(
-                                                videoId = videoId,
-                                                title = item.title,
-                                                artist = InnertubeParser.artistFromSubtitle(item.subtitle),
-                                                thumbnailUrl = item.thumbnailUrl,
-                                                appleCatalogId = item.appleCatalogId,
-                                            ),
+                                            song,
                                             QueueSource(
                                                 category.title,
                                                 PlaybackSourceType.EXPLORE,
@@ -5067,16 +5062,8 @@ private fun BitChordApp(
                             onFlowClick = { showFlow = true },
                             seeds = radioSeeds,
                             onSeedClick = { item ->
-                                val videoId = item.videoId
-                                if (videoId != null) {
-                                    startRadio(
-                                        Song(
-                                            videoId = videoId,
-                                            title = item.title,
-                                            artist = InnertubeParser.artistFromSubtitle(item.subtitle),
-                                            thumbnailUrl = item.thumbnailUrl,
-                                        ),
-                                    )
+                                shelfSong(item)?.let { song ->
+                                    startRadio(song)
                                 }
                             },
                             onStationClick = viewModel::openMoodGenre,

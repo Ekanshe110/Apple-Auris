@@ -6,14 +6,18 @@ import com.music.bitchord.data.flow.encodeFlowSnapshot
 import com.music.bitchord.data.liked.decodeLikedRows
 import com.music.bitchord.data.liked.encodeLikedRows
 import com.music.bitchord.data.model.Song
+import com.music.bitchord.data.model.ShelfItem
 import com.music.bitchord.data.settings.AppSettings
 import com.music.bitchord.data.settings.HomeProvider
 import com.music.bitchord.data.sources.SourceCatalogRole
 import com.music.bitchord.data.sources.SourceConfig
 import com.music.bitchord.data.sources.SourceKind
 import com.music.bitchord.data.sources.SourceRegistry
+import com.music.bitchord.playback.requiresStrictAppleIdentity
+import com.music.bitchord.playback.strictAppleWatchUri
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -93,6 +97,93 @@ class AppleRichModeTest {
         assertEquals("Apple Music catalogue not found", liked.appleLookupError)
         assertNull(flow.appleCatalogId)
         assertEquals("Apple Music catalogue not found", flow.appleLookupError)
+    }
+
+    @Test
+    fun `legacy Apple migration never overrides an existing provider choice`() {
+        assertEquals(
+            HomeProvider.APPLE,
+            AppSettings.migratedHomeProvider(storedProvider = null, legacyAppleEnabled = true),
+        )
+        assertEquals(
+            HomeProvider.YOUTUBE,
+            AppSettings.migratedHomeProvider(
+                storedProvider = HomeProvider.YOUTUBE.name,
+                legacyAppleEnabled = true,
+            ),
+        )
+        assertEquals(
+            HomeProvider.SPOTIFY,
+            AppSettings.migratedHomeProvider(
+                storedProvider = HomeProvider.SPOTIFY.name,
+                legacyAppleEnabled = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `Apple enrichment identity is scoped to source and account`() {
+        val base = SourceConfig(
+            id = "apple-config",
+            kind = SourceKind.ADDON,
+            baseUrl = "https://apple.invalid",
+            settings = mapOf("libraryToken" to "account-one"),
+        )
+        val otherAccount = base.copy(settings = mapOf("libraryToken" to "account-two"))
+        val otherSource = base.copy(id = "another-apple-config")
+
+        assertNotEquals(
+            AppleEnrichment.sourceIdentity(base),
+            AppleEnrichment.sourceIdentity(otherAccount),
+        )
+        assertNotEquals(
+            AppleEnrichment.sourceIdentity(base),
+            AppleEnrichment.sourceIdentity(otherSource),
+        )
+    }
+
+    @Test
+    fun `persisted lookup error remains retryable`() {
+        val failed = song(lookupError = "Apple Music catalogue not found")
+
+        with(AppleEnrichment) {
+            assertTrue(failed.needsAppleLookup())
+        }
+    }
+
+    @Test
+    fun `shelf lookup error survives card propagation`() {
+        val card = ShelfItem(
+            title = "Sanam Teri Kasam",
+            subtitle = "Shaan",
+            thumbnailUrl = null,
+            videoId = "spotify:track",
+            browseId = null,
+            appleLookupError = "Apple Music catalogue not found",
+        )
+
+        assertEquals("Apple Music catalogue not found", card.copy().appleLookupError)
+    }
+
+    @Test
+    fun `unresolved Apple playback uses a strict generic watch URI`() {
+        val uri = song().strictAppleWatchUri()
+
+        assertTrue(uri.startsWith("bitchord://watch?"))
+        assertTrue(uri.contains("appleStrict=1"))
+    }
+
+    @Test
+    fun `Apple mode keeps unresolved discovery lyrics strict`() {
+        val previousProvider = AppSettings.homeProvider.value
+        try {
+            AppSettings.homeProvider.value = HomeProvider.APPLE
+
+            assertTrue(song().requiresStrictAppleIdentity())
+            assertTrue(song(appleId = "123").requiresStrictAppleIdentity())
+        } finally {
+            AppSettings.homeProvider.value = previousProvider
+        }
     }
 
     @Test

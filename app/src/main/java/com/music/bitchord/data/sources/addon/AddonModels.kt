@@ -73,6 +73,15 @@ data class AddonManifest(
      */
     @SerialName("checkValidLossless") val checkValidLossless: JsonElement? = null,
     /**
+     * The catalogue this addon speaks for, independently of optional features.
+     *
+     * `apple-music` identifies an Apple catalogue addon even when it does not
+     * offer authenticated library access. Library capability cannot carry this
+     * identity: it is optional, so deriving vendor identity from it would make
+     * a search-only Apple addon look generic.
+     */
+    @SerialName("catalogueProvider") val catalogueProvider: String = "",
+    /**
      * Optional authenticated-library support. Absent means the addon does not
      * advertise library access; it does not mean the app should probe private
      * routes or invent a provider.
@@ -82,6 +91,10 @@ data class AddonManifest(
     val downloadsAllowed: Boolean get() = allowDownloads.asFlag() ?: true
 
     val requiresLosslessOutput: Boolean get() = checkValidLossless.asFlag() ?: false
+
+    /** Whether this manifest explicitly identifies an Apple Music catalogue. */
+    val isAppleMusicCatalog: Boolean
+        get() = catalogueProvider.equals(AddonLibraryCapability.PROVIDER_APPLE_MUSIC, ignoreCase = true)
 
     fun declares(resource: String): Boolean =
         resources.any { it.equals(resource, ignoreCase = true) }

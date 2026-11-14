@@ -1538,7 +1538,9 @@ object AppSettings {
         }.getOrDefault(AutomixPerformanceMode.BALANCED)
         // An unknown name lands on YouTube rather than on nothing: the provider
         // a listener never chose is the one that works without an account.
-        homeProvider.value = HomeProvider.of(prefs.getString(KEY_HOME_PROVIDER, null))
+        val storedHomeProvider = prefs.getString(KEY_HOME_PROVIDER, null)
+        val legacyAppleEnabled = prefs.getBoolean(KEY_APPLE_CATALOG_ENABLED, false)
+        homeProvider.value = migratedHomeProvider(storedHomeProvider, legacyAppleEnabled)
         // An install that still has the removed engine's name in its
         // preferences fails the lookup and lands on the one engine there is.
         automixEngine.value = runCatching {
@@ -1641,12 +1643,17 @@ object AppSettings {
         swipeToPlayNext.value = prefs.getBoolean(KEY_SWIPE_TO_PLAY_NEXT, false)
         dontRepeatSuggestions.value = prefs.getBoolean(KEY_DONT_REPEAT_SUGGESTIONS, false)
         preferMusicOnly.value = prefs.getBoolean(KEY_PREFER_MUSIC_ONLY, false)
-        // Older builds stored a separate Apple Rich Mode switch. Preserve an
-        // enabled choice by moving it into the Content source selection, then
-        // let that single persisted choice own the feature from here on.
-        if (prefs.getBoolean(KEY_APPLE_CATALOG_ENABLED, false)) {
-            homeProvider.value = HomeProvider.APPLE
-            prefs.edit().putString(KEY_HOME_PROVIDER, HomeProvider.APPLE.name).apply()
+        // Older builds stored a separate Apple Rich Mode switch. Migrate it
+        // only when no Content source preference exists. Once a provider has
+        // been chosen, that preference owns the feature; otherwise this legacy
+        // key would silently switch the listener back to Apple on every launch.
+        if (legacyAppleEnabled) {
+            val migration = prefs.edit()
+            if (!prefs.contains(KEY_HOME_PROVIDER)) {
+                migration.putString(KEY_HOME_PROVIDER, HomeProvider.APPLE.name)
+            }
+            // Mark the legacy value consumed even when no migration was needed.
+            migration.remove(KEY_APPLE_CATALOG_ENABLED).apply()
         }
         smartVersionAlignment.value = prefs.getBoolean(KEY_SMART_VERSION_ALIGNMENT, true)
         reduceDynamicBlur.value = prefs.getBoolean(KEY_REDUCE_BLUR, lowEndDevice)
@@ -2106,6 +2113,22 @@ object AppSettings {
         // process dies is a switch that reports success and comes back on the
         // old provider — which is exactly what it did.
         prefs.edit().putString(KEY_HOME_PROVIDER, value.name).commit()
+    }
+
+    /**
+     * Resolve the persisted Content source, including the one legacy migration.
+     *
+     * The legacy Apple switch is authoritative only when no Content source was
+     * ever chosen. Once a provider preference exists it owns the setting,
+     * including a later choice to leave Apple mode.
+     */
+    internal fun migratedHomeProvider(
+        storedProvider: String?,
+        legacyAppleEnabled: Boolean,
+    ): HomeProvider = if (legacyAppleEnabled && storedProvider == null) {
+        HomeProvider.APPLE
+    } else {
+        HomeProvider.of(storedProvider)
     }
 
     /**
