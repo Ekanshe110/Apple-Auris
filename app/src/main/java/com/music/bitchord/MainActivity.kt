@@ -2761,8 +2761,8 @@ private fun BitChordApp(
         }
         viewModel.setSearchSource(source)
     }
-    LaunchedEffect(searchSource, appleCatalogState.value.ready) {
-        if (searchSource == SearchSource.APPLE && searchSource !in visibleSearchSources(appleCatalogState.value.ready)) {
+    LaunchedEffect(searchSource, appleCatalogState.ready) {
+        if (searchSource == SearchSource.APPLE && searchSource !in visibleSearchSources(appleCatalogState.ready)) {
             onSearchSourceChange(SearchSource.YOUTUBE)
         }
     }
@@ -2808,7 +2808,7 @@ private fun BitChordApp(
         onToggleSource = {
             // Cycle only through the sources currently offered. Apple is
             // additive and never displaces Spotify.
-            val currentSources = visibleSearchSources(appleCatalogState.value.ready)
+            val currentSources = visibleSearchSources(appleCatalogState.ready)
             onSearchSourceChange(
                 currentSources[
                     (currentSources.indexOf(searchSource) + 1)
@@ -4428,7 +4428,7 @@ private fun BitChordApp(
                             contentPadding = listPadding,
                         )
                     } else if (key == "apple_library") {
-                        val appleConfig = appleCatalogState.value.config
+                        val appleConfig = appleCatalogState.config
                         if (appleConfig == null) {
                             Text(
                                 text = "Apple Music library is not configured",
@@ -5236,7 +5236,7 @@ private fun BitChordApp(
                             // The settings page's own two-state selector, so the
                             // app has one look for "pick one of these".
                             sourceSwitcher = {
-                                val currentSources = visibleSearchSources(appleCatalogState.value.ready)
+                                val currentSources = visibleSearchSources(appleCatalogState.ready)
                                 SegmentedControl(
                                     options = currentSources.map { source ->
                                         when (source) {
