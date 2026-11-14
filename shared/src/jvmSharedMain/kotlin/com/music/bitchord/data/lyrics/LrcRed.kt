@@ -55,9 +55,21 @@ object LrcRed {
         durationMs: Long,
         isrc: String? = null,
         get: suspend (String) -> String? = { lyricsGet(it) },
+        /** False when the caller has named one recording and may not fall back to a sibling. */
+        allowSearch: Boolean = true,
     ): List<LyricLine>? = withContext(Dispatchers.IO) {
         val known = isrc?.let(::documentUrl)
-        if (known != null) document(known, get)?.let { return@withContext it }
+        if (known != null) {
+            document(known, get)?.let { return@withContext it }
+            // The recording is already named. A search here can find its clean
+            // sibling and attach those words to an explicit master.
+            if (!allowSearch) return@withContext null
+        } else if (!allowSearch) {
+            // A strict Apple row without an ISRC has no exact recording route.
+            // Do not turn it into a name search: that is how a clean sibling
+            // gets attached to an explicit master.
+            return@withContext null
+        }
 
         // A known recording lrc.red doesn't have — a local file's tag naming a
         // release it never indexed — still gets a search: the same song is

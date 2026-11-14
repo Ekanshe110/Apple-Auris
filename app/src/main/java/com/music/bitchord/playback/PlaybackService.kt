@@ -9503,6 +9503,8 @@ class PlaybackService : MediaLibraryService() {
                     prioritizeSyllableSync = AppSettings.prioritizeSyllableSync.value,
                     appleSongId = currentSong.appleCatalogId,
                     strictApple = currentSong.requiresStrictAppleIdentity(),
+                    isrc = currentSong.isrc,
+                    isExplicit = currentSong.isExplicit == true,
                 )
                 lines = found?.lines
             }

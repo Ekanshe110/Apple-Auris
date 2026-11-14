@@ -1,0 +1,672 @@
+# Exact Apple Auris server deployment patch.
+# Apply from filesystem root with: patch -p1 < APPLE_SERVER_PATCH.diff
+# Active public path: nginx -> auris-legacy-gate -> per-slot legacy worker.
+--- a/opt/auris-legacy/app.py
++++ b/opt/auris-legacy/app.py
+@@ -548,0 +549 @@
++                "contentRating", "explicit", "isrc",
+@@ -1050,0 +1052 @@
++        content_rating = str(attrs.get("contentRating") or "").strip().lower()
+@@ -1069,0 +1072,3 @@
++            "contentRating": content_rating or None,
++            "explicit": content_rating == "explicit" if content_rating else None,
++            "isrc": str(attrs.get("isrc") or "").strip() or None,
+@@ -1214,0 +1220,283 @@
++def _apple_recommendation_track(song: dict) -> dict:
++    """Normalize one Apple catalogue song without changing its exact id."""
++    attrs = song.get("attributes") or {}
++    art = str((attrs.get("artwork") or {}).get("url") or "")
++    if art:
++        art = ARTWORK_RE.sub("600x600", art)
++    traits = [str(item).lower() for item in (attrs.get("audioTraits") or [])]
++    duration_ms = attrs.get("durationInMillis")
++    content_rating = str(attrs.get("contentRating") or "").strip().lower()
++    song_id = str(song.get("id") or "")
++    if not song_id:
++        return {}
++    remember_track_atmos(song_id, any("atmos" in item for item in traits))
++    track = {
++        "id": song_id,
++        "title": attrs.get("name") or "",
++        "artist": attrs.get("artistName") or "",
++        "album": attrs.get("albumName") or "",
++        "duration": (duration_ms / 1000.0) if duration_ms else None,
++        "artworkURL": art or None,
++        "format": "m4a",
++        "audioQuality": (
++            "HI-RES LOSSLESS"
++            if any("hi-res" in item for item in traits)
++            else "LOSSLESS"
++            if any("lossless" in item for item in traits)
++            else "AAC"
++        ),
++        "audioMode": "DOLBY_ATMOS" if any("atmos" in item for item in traits) else "STEREO",
++        "atmos": any("atmos" in item for item in traits),
++        "contentRating": content_rating or None,
++        "explicit": content_rating == "explicit" if content_rating else None,
++        "isrc": str(attrs.get("isrc") or "").strip() or None,
++    }
++    remember_track_meta(track)
++    return track
++
++
++def _apple_recommendations(limit: int = 40) -> list[dict]:
++    """Apple Music's personalised recommendations as exact catalogue rows.
++
++    Apple exposes recommendation groups whose contents are mostly albums. The
++    album tracks are read from the public catalogue and keep their exact song
++    ids, ratings and ISRCs. Account tokens never leave the server.
++    """
++    try:
++        developer_token = get_developer_token()
++        music_token = (WRAPPER_DATA / "MUSIC_TOKEN").read_text("utf-8").strip()
++    except OSError as exc:
++        raise AppleLibraryApiError(
++            401, "signed_out", "Apple Music account is not connected"
++        ) from exc
++    if not developer_token or not music_token:
++        raise AppleLibraryApiError(
++            401, "signed_out", "Apple Music account is not connected"
++        )
++
++    user_headers = {
++        "Authorization": f"Bearer {developer_token}",
++        "Music-User-Token": music_token,
++        "Origin": "https://music.apple.com",
++        "Accept": "application/json",
++    }
++    catalog_headers = {
++        "Authorization": f"Bearer {developer_token}",
++        "Origin": "https://music.apple.com",
++        "Accept": "application/json",
++    }
++    try:
++        raw = _http_get(
++            "https://amp-api.music.apple.com/v1/me/recommendations?limit=8",
++            user_headers,
++            timeout=20,
++        )
++        payload = json.loads(raw.decode("utf-8"))
++    except urllib.error.HTTPError as exc:
++        if exc.code == 401:
++            raise AppleLibraryApiError(
++                401, "signed_out", "Apple Music sign-in required"
++            ) from exc
++        if exc.code == 429:
++            raise AppleLibraryApiError(
++                429, "rate_limited", "Apple Music recommendations are rate limited"
++            ) from exc
++        raise AppleLibraryApiError(
++            502, "apple_upstream_error", "Apple Music recommendations request failed"
++        ) from exc
++    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
++        raise AppleLibraryApiError(
++            502, "invalid_upstream_response", "Apple Music returned invalid recommendations"
++        ) from exc
++
++    album_ids: list[str] = []
++    direct_songs: list[dict] = []
++    for group in payload.get("data") or []:
++        contents = ((group.get("relationships") or {}).get("contents") or {}).get("data") or []
++        for item in contents:
++            item_type = str(item.get("type") or "")
++            item_id = str(item.get("id") or "")
++            if item_type == "albums" and item_id and item_id not in album_ids:
++                album_ids.append(item_id)
++            elif item_type == "songs":
++                direct_songs.append(item)
++
++    cfg = load_config()
++    storefront = (cfg.get("storefront") or "us").strip().lower()
++    if not STORE_RE.match(storefront):
++        storefront = "us"
++    songs = list(direct_songs)
++    for album_id in album_ids:
++        if len(songs) >= limit:
++            break
++        url = (
++            f"https://amp-api.music.apple.com/v1/catalog/{storefront}/albums/"
++            f"{urllib.parse.quote(album_id, safe='')}/tracks?limit=50"
++        )
++        try:
++            raw = _http_get(url, catalog_headers, timeout=15)
++            album = json.loads(raw.decode("utf-8"))
++        except (urllib.error.HTTPError, UnicodeDecodeError, json.JSONDecodeError):
++            continue
++        songs.extend(album.get("data") or [])
++
++    tracks: list[dict] = []
++    seen: set[str] = set()
++    for song in songs:
++        normalized = _apple_recommendation_track(song)
++        song_id = str(normalized.get("id") or "")
++        if not song_id or song_id in seen:
++            continue
++        seen.add(song_id)
++        tracks.append(normalized)
++        if len(tracks) >= limit:
++            break
++    return tracks
++
++
++class AppleLibraryApiError(Exception):
++    """An Apple library request failed with a status the client must see."""
++
++    def __init__(self, status: int, code: str, message: str):
++        super().__init__(message)
++        self.status = status
++        self.code = code
++        self.message = message
++
++
++def _library_api_get(path: str, offset: int | None = None, limit: int | None = None) -> dict:
++    """Read one page from the linked slot's private Apple Music library.
++
++    The path token already selects the slot. The slot's developer and Music
++    user tokens stay on the server and are sent only as request headers.
++    """
++    try:
++        developer_token = get_developer_token()
++        music_token = (WRAPPER_DATA / "MUSIC_TOKEN").read_text("utf-8").strip()
++    except OSError as exc:
++        raise AppleLibraryApiError(
++            401, "signed_out", "Apple Music account is not connected"
++        ) from exc
++    if not developer_token or not music_token:
++        raise AppleLibraryApiError(
++            401, "signed_out", "Apple Music account is not connected"
++        )
++    query = {}
++    if offset is not None:
++        query["offset"] = str(int(offset))
++    if limit is not None:
++        query["limit"] = str(int(limit))
++    url = f"https://amp-api.music.apple.com/v1/me/library{path}"
++    if query:
++        url += "?" + urllib.parse.urlencode(query)
++    try:
++        raw = _http_get(
++            url,
++            {
++                "Authorization": f"Bearer {developer_token}",
++                "Music-User-Token": music_token,
++                "Origin": "https://music.apple.com",
++                "Accept": "application/json",
++            },
++            timeout=20,
++        )
++    except urllib.error.HTTPError as exc:
++        if exc.code == 401:
++            raise AppleLibraryApiError(
++                401, "signed_out", "Apple Music sign-in required"
++            ) from exc
++        if exc.code == 403:
++            raise AppleLibraryApiError(
++                403, "forbidden", "Apple Music account lacks library scope"
++            ) from exc
++        if exc.code == 404:
++            raise AppleLibraryApiError(
++                404, "not_found", "Apple Music library item was not found"
++            ) from exc
++        if exc.code == 429:
++            raise AppleLibraryApiError(
++                429, "rate_limited", "Apple Music library is rate limited"
++            ) from exc
++        raise AppleLibraryApiError(
++            502, "apple_upstream_error", "Apple Music library request failed"
++        ) from exc
++    try:
++        data = json.loads(raw.decode("utf-8"))
++    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
++        raise AppleLibraryApiError(
++            502, "invalid_upstream_response", "Apple Music returned an invalid library response"
++        ) from exc
++    if not isinstance(data, dict):
++        raise AppleLibraryApiError(
++            502, "invalid_upstream_response", "Apple Music returned an invalid library response"
++        )
++    return data
++
++
++def _library_item(raw: dict) -> dict:
++    attrs = raw.get("attributes") or {}
++    play_params = attrs.get("playParams") or {}
++    raw_id = str(raw.get("id") or "")
++    catalog_id = str(play_params.get("catalogId") or "")
++    if not catalog_id and SONG_RE.fullmatch(raw_id):
++        catalog_id = raw_id
++    artwork = str((attrs.get("artwork") or {}).get("url") or "")
++    if artwork:
++        artwork = ARTWORK_RE.sub("600x600", artwork)
++    duration_ms = attrs.get("durationInMillis")
++    content_rating = str(attrs.get("contentRating") or "").strip().lower()
++    return {
++        "id": raw_id,
++        "catalogId": catalog_id,
++        "streamId": catalog_id if str(raw.get("type") or "").startswith("library-songs") else "",
++        "title": str(attrs.get("name") or ""),
++        "artist": str(attrs.get("artistName") or ""),
++        "album": str(attrs.get("albumName") or ""),
++        "artworkURL": artwork,
++        "duration": (float(duration_ms) / 1000.0) if duration_ms else None,
++        "contentRating": content_rating or None,
++        "explicit": content_rating == "explicit" if content_rating else None,
++        "isrc": str(attrs.get("isrc") or "").strip() or None,
++    }
++
++
++def _library_page(raw: dict, offset: int, limit: int) -> dict:
++    rows = raw.get("data") or []
++    if not isinstance(rows, list):
++        rows = []
++    items = [_library_item(row) for row in rows if isinstance(row, dict)]
++    meta = raw.get("meta") or {}
++    total_value = meta.get("total") if isinstance(meta, dict) else None
++    total = int(total_value) if isinstance(total_value, (int, float)) else None
++    has_more = bool(raw.get("next"))
++    if total is not None:
++        has_more = has_more or (offset + len(items) < total)
++    return {
++        "items": items,
++        "offset": offset,
++        "limit": limit,
++        "total": total,
++        "hasMore": has_more,
++        "nextOffset": (offset + len(items)) if has_more and items else None,
++    }
++
++
++def _library_page_params(query: dict) -> tuple[int, int]:
++    try:
++        offset = int((query.get("offset") or ["0"])[0])
++        limit = int((query.get("limit") or ["25"])[0])
++    except (TypeError, ValueError) as exc:
++        raise AppleLibraryApiError(
++            400, "invalid_request", "offset and limit must be integers"
++        ) from exc
++    if offset < 0:
++        raise AppleLibraryApiError(
++            400, "invalid_request", "offset must be non-negative"
++        )
++    if limit < 1 or limit > 100:
++        raise AppleLibraryApiError(
++            400, "invalid_request", "limit must be from 1 to 100"
++        )
++    return offset, limit
++
++
+@@ -2958,0 +3247,22 @@
++        if rest == "recommendations":
++            raw_limit = (query.get("limit") or ["40"])[0]
++            try:
++                limit = max(1, min(100, int(raw_limit)))
++            except (TypeError, ValueError):
++                return self._send_json({"error": "invalid limit"}, 400)
++            try:
++                return self._send_json({"tracks": _apple_recommendations(limit)})
++            except AppleLibraryApiError as exc:
++                return self._send_json(
++                    {"error": {"code": exc.code, "message": exc.message}}, exc.status
++                )
++            except Exception as exc:
++                traceback.print_exc()
++                return self._send_json(
++                    {"error": {
++                        "code": "apple_upstream_error",
++                        "message": "Apple Music recommendations request failed",
++                    }},
++                    502,
++                )
++
+@@ -2973,0 +3284,33 @@
++        if rest == "library" or rest.startswith("library/"):
++            parts = [urllib.parse.unquote(part) for part in rest.split("/") if part]
++            try:
++                if len(parts) == 2 and parts[1] in ("playlists", "albums", "songs"):
++                    offset, limit = _library_page_params(query)
++                    raw = _library_api_get(f"/{parts[1]}", offset, limit)
++                    return self._send_json(_library_page(raw, offset, limit))
++                if len(parts) == 4 and parts[1] in ("playlists", "albums", "songs") and parts[3] == "tracks":
++                    collection, collection_id = parts[1], parts[2]
++                    if not collection_id:
++                        raise AppleLibraryApiError(
++                            400, "invalid_request", "collection id is required"
++                        )
++                    if collection == "songs":
++                        raw = _library_api_get(
++                            f"/songs/{urllib.parse.quote(collection_id, safe='')}"
++                        )
++                        return self._send_json(_library_page(raw, 0, 1))
++                    offset, limit = _library_page_params(query)
++                    raw = _library_api_get(
++                        f"/{collection}/{urllib.parse.quote(collection_id, safe='')}/tracks",
++                        offset,
++                        limit,
++                    )
++                    return self._send_json(_library_page(raw, offset, limit))
++                raise AppleLibraryApiError(
++                    404, "not_found", "Apple Music library route was not found"
++                )
++            except AppleLibraryApiError as exc:
++                return self._send_json(
++                    {"error": {"code": exc.code, "message": exc.message}}, exc.status
++                )
++
+@@ -4327,0 +4671,9 @@
++        "catalogueProvider": "apple-music",
++        "library": {
++            "provider": "apple-music",
++            "collections": ["playlists", "albums", "songs"],
++            "authentication": {
++                "type": "none",
++                "required": False,
++            },
++        },
+--- a/opt/auris-legacy/gate.py
++++ b/opt/auris-legacy/gate.py
+@@ -246,0 +247,24 @@
++def _refresh_worker_sources(slot_dir: Path) -> None:
++    """Refresh deployable worker code without touching per-slot state.
++
++    Runtime directories contain credentials, wrapper data, sessions, logs and
++    cached media, so they must never be replaced wholesale.  The small set of
++    deployable files is refreshed whenever a worker starts, before the new
++    process is launched; an idle worker therefore picks up a deployment on its
++    next start and an active worker is never mutated underneath itself.
++    """
++    for name in ("app.py", "fastpath.py", "atmos_fastpath.py", "manifest.json"):
++        src = SOURCE / name
++        if not src.is_file():
++            continue
++        dst = slot_dir / name
++        try:
++            if dst.is_file() and dst.read_bytes() == src.read_bytes():
++                continue
++        except OSError:
++            pass
++        tmp = slot_dir / f".{name}.new"
++        shutil.copy2(src, tmp)
++        os.replace(tmp, dst)
++
++
+@@ -249,0 +274 @@
++        _refresh_worker_sources(slot_dir)
+@@ -816,0 +842,8 @@
++    if is_media:
++        # A progressive media response can end early when the player seeks or
++        # abandons the track. The worker keeps the partial bytes for the next
++        # range, but forwarding the original full-file Content-Length would
++        # make ASGI report a truncated response. Range semantics remain in
++        # Content-Range; the streamed body needs no declared length.
++        out_headers.pop("Content-Length", None)
++        out_headers.pop("content-length", None)
+--- a/opt/auris-legacy/manifest.json
++++ b/opt/auris-legacy/manifest.json
+@@ -3,0 +4 @@
++  "version": "1.0.0",
+@@ -7,2 +8,15 @@
+-  ]
+-}
+\ No newline at end of file
++  ],
++  "catalogueProvider": "apple-music",
++  "library": {
++    "provider": "apple-music",
++    "collections": [
++      "playlists",
++      "albums",
++      "songs"
++    ],
++    "authentication": {
++      "type": "none",
++      "required": false
++    }
++  }
++}
+--- a/opt/auris-app/app.py
++++ b/opt/auris-app/app.py
+@@ -1317,0 +1318 @@
++    content_rating = str(attrs.get("contentRating") or "").strip().lower()
+@@ -1331,0 +1333,2 @@
++        "contentRating": content_rating or None,
++        "explicit": content_rating == "explicit" if content_rating else None,
+@@ -1336,0 +1340,132 @@
++class _AppleLibraryHTTPError(Exception):
++    def __init__(self, status: int, code: str, message: str):
++        super().__init__(message)
++        self.status = status
++        self.code = code
++        self.message = message
++
++
++def _library_api_get(
++    record: dict[str, Any],
++    path: str,
++    offset: int | None = None,
++    limit: int | None = None,
++) -> dict[str, Any]:
++    developer_token = str(record.get("dev_token") or "").strip()
++    music_token = str(record.get("music_token") or "").strip()
++    if not developer_token or not music_token:
++        raise _AppleLibraryHTTPError(
++            401, "signed_out", "Apple Music account is not connected"
++        )
++    params: dict[str, str] = {}
++    if offset is not None:
++        params["offset"] = str(int(offset))
++    if limit is not None:
++        params["limit"] = str(int(limit))
++    response = requests.get(
++        f"https://amp-api.music.apple.com/v1/me/library{path}",
++        params=params,
++        headers={
++            "Authorization": f"Bearer {developer_token}",
++            "Music-User-Token": music_token,
++            "Origin": "https://music.apple.com",
++            "Accept": "application/json",
++            "User-Agent": "AppleAddon-Local/2.0",
++        },
++        timeout=20,
++    )
++    if response.status_code == 401:
++        raise _AppleLibraryHTTPError(
++            401, "signed_out", "Apple Music sign-in required"
++        )
++    if response.status_code == 403:
++        raise _AppleLibraryHTTPError(
++            403, "forbidden", "Apple Music account lacks library scope"
++        )
++    if response.status_code == 404:
++        raise _AppleLibraryHTTPError(
++            404, "not_found", "Apple Music library item was not found"
++        )
++    if response.status_code == 429:
++        raise _AppleLibraryHTTPError(
++            429, "rate_limited", "Apple Music library is rate limited"
++        )
++    if not response.ok:
++        raise _AppleLibraryHTTPError(
++            502, "apple_upstream_error", "Apple Music library request failed"
++        )
++    try:
++        data = response.json()
++    except ValueError as exc:
++        raise _AppleLibraryHTTPError(
++            502, "invalid_upstream_response", "Apple Music returned an invalid library response"
++        ) from exc
++    if not isinstance(data, dict):
++        raise _AppleLibraryHTTPError(
++            502, "invalid_upstream_response", "Apple Music returned an invalid library response"
++        )
++    return data
++
++
++def _normalize_library_item(raw: dict[str, Any]) -> dict[str, Any]:
++    attrs = raw.get("attributes") or {}
++    play_params = attrs.get("playParams") or {}
++    raw_id = str(raw.get("id") or "")
++    catalog_id = str(play_params.get("catalogId") or "")
++    if not catalog_id and raw_id.isdigit():
++        catalog_id = raw_id
++    artwork = str((attrs.get("artwork") or {}).get("url") or "")
++    if artwork:
++        artwork = ARTWORK_RE.sub("600x600", artwork)
++    duration_ms = attrs.get("durationInMillis")
++    content_rating = str(attrs.get("contentRating") or "").strip().lower()
++    return {
++        "id": raw_id,
++        "catalogId": catalog_id,
++        "streamId": catalog_id if str(raw.get("type") or "").startswith("library-songs") else "",
++        "title": str(attrs.get("name") or ""),
++        "artist": str(attrs.get("artistName") or ""),
++        "album": str(attrs.get("albumName") or ""),
++        "artworkURL": artwork,
++        "duration": (float(duration_ms) / 1000.0) if duration_ms else None,
++        "contentRating": content_rating or None,
++        "explicit": content_rating == "explicit" if content_rating else None,
++        "isrc": str(attrs.get("isrc") or "").strip() or None,
++    }
++
++
++def _normalize_library_page(
++    raw: dict[str, Any], offset: int, limit: int
++) -> dict[str, Any]:
++    rows = raw.get("data") or []
++    if not isinstance(rows, list):
++        rows = []
++    items = [_normalize_library_item(row) for row in rows if isinstance(row, dict)]
++    meta = raw.get("meta") or {}
++    total_value = meta.get("total") if isinstance(meta, dict) else None
++    total = int(total_value) if isinstance(total_value, (int, float)) else None
++    has_more = bool(raw.get("next"))
++    if total is not None:
++        has_more = has_more or (offset + len(items) < total)
++    return {
++        "items": items,
++        "offset": offset,
++        "limit": limit,
++        "total": total,
++        "hasMore": has_more,
++        "nextOffset": (offset + len(items)) if has_more and items else None,
++    }
++
++
++def _library_page_params(offset: int, limit: int) -> tuple[int, int]:
++    if offset < 0:
++        raise _AppleLibraryHTTPError(
++            400, "invalid_request", "offset must be non-negative"
++        )
++    if limit < 1 or limit > 100:
++        raise _AppleLibraryHTTPError(
++            400, "invalid_request", "limit must be from 1 to 100"
++        )
++    return offset, limit
++
++
+@@ -4389,0 +4525 @@
++        "version": "1.0.0",
+@@ -4390,0 +4527,9 @@
++        "catalogueProvider": "apple-music",
++        "library": {
++            "provider": "apple-music",
++            "collections": ["playlists", "albums", "songs"],
++            "authentication": {
++                "type": "none",
++                "required": False,
++            },
++        },
+@@ -4391,0 +4537,80 @@
++
++
++def _library_json_response(payload: dict[str, Any], status: int = 200) -> Response:
++    return Response(
++        content=json.dumps(payload),
++        status_code=status,
++        media_type="application/json",
++    )
++
++
++def _library_error_response(exc: _AppleLibraryHTTPError) -> Response:
++    return _library_json_response(
++        {"error": {"code": exc.code, "message": exc.message}},
++        exc.status,
++    )
++
++
++@app.get("/a/{config_token}/library/{collection}")
++async def addon_library_collection(
++    config_token: str,
++    collection: str,
++    offset: int = 0,
++    limit: int = 25,
++) -> Response:
++    if collection not in ("playlists", "albums", "songs"):
++        return _library_error_response(
++            _AppleLibraryHTTPError(404, "not_found", "Apple Music library route was not found")
++        )
++    account_id = _verify_config(config_token)
++    await _require_subscription(account_id)
++    try:
++        page_offset, page_limit = _library_page_params(offset, limit)
++        record = _record(account_id)
++        page = await run_in_threadpool(
++            _normalize_library_page,
++            _library_api_get(record, f"/{collection}", page_offset, page_limit),
++            page_offset,
++            page_limit,
++        )
++        return _library_json_response(page)
++    except _AppleLibraryHTTPError as exc:
++        return _library_error_response(exc)
++
++
++@app.get("/a/{config_token}/library/{collection}/{collection_id}/tracks")
++async def addon_library_tracks(
++    config_token: str,
++    collection: str,
++    collection_id: str,
++    offset: int = 0,
++    limit: int = 25,
++) -> Response:
++    if collection not in ("playlists", "albums", "songs"):
++        return _library_error_response(
++            _AppleLibraryHTTPError(404, "not_found", "Apple Music library route was not found")
++        )
++    account_id = _verify_config(config_token)
++    await _require_subscription(account_id)
++    try:
++        page_offset, page_limit = _library_page_params(offset, limit)
++        record = _record(account_id)
++        if collection == "songs":
++            raw = await run_in_threadpool(
++                _library_api_get,
++                record,
++                f"/songs/{quote(collection_id, safe='')}",
++            )
++            return _library_json_response(_normalize_library_page(raw, 0, 1))
++        raw = await run_in_threadpool(
++            _library_api_get,
++            record,
++            f"/{collection}/{quote(collection_id, safe='')}/tracks",
++            page_offset,
++            page_limit,
++        )
++        return _library_json_response(
++            _normalize_library_page(raw, page_offset, page_limit)
++        )
++    except _AppleLibraryHTTPError as exc:
++        return _library_error_response(exc)
+--- a/opt/auris-apple-addon/app.py
++++ b/opt/auris-apple-addon/app.py
+@@ -743,0 +744 @@
++        content_rating = str(attrs.get("contentRating") or "").strip().lower()
+@@ -759,0 +761,3 @@
++                "contentRating": content_rating or None,
++                "explicit": content_rating == "explicit" if content_rating else None,
++                "isrc": str(attrs.get("isrc") or "").strip() or None,
+@@ -3538,0 +3543 @@
++        "catalogueProvider": "apple-music",
+--- a/opt/auris-apple-addon/manifest.json
++++ b/opt/auris-apple-addon/manifest.json
+@@ -8,0 +9 @@
++  "catalogueProvider": "apple-music",

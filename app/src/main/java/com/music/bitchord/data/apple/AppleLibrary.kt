@@ -153,5 +153,12 @@ fun AddonLibraryItem.toSong(configId: String): Song? {
             "${it / 60}:${"%02d".format(Locale.ROOT, it % 60)}"
         },
         appleCatalogId = catalogId.trim().takeIf { it.isNotEmpty() },
+        isExplicit = explicit ?: when (contentRating?.lowercase(Locale.ROOT)) {
+            "explicit" -> true
+            "clean" -> false
+            else -> null
+        },
+        contentRating = contentRating?.lowercase(Locale.ROOT),
+        isrc = isrc?.trim()?.takeIf { it.isNotEmpty() },
     )
 }

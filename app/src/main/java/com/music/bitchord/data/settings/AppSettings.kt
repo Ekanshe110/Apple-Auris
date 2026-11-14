@@ -349,6 +349,15 @@ object AppSettings {
     val homeProvider = MutableStateFlow(HomeProvider.YOUTUBE)
 
     /**
+     * Which recommendation algorithm builds Home, Flow and Autoplay.
+     *
+     * Separate from [homeProvider]: this changes discovery, not the catalogue,
+     * library, or audio backend. The persisted choice wins on every launch;
+     * an install with no choice inherits the migrated content provider.
+     */
+    val recommendationAlgorithm = MutableStateFlow(RecommendationAlgorithm.YOUTUBE)
+
+    /**
      * Whether Apple Rich Mode is active.
      *
      * Derived from the persisted Content source choice. There is deliberately
@@ -1541,6 +1550,14 @@ object AppSettings {
         val storedHomeProvider = prefs.getString(KEY_HOME_PROVIDER, null)
         val legacyAppleEnabled = prefs.getBoolean(KEY_APPLE_CATALOG_ENABLED, false)
         homeProvider.value = migratedHomeProvider(storedHomeProvider, legacyAppleEnabled)
+        recommendationAlgorithm.value = RecommendationAlgorithm.of(
+            prefs.getString(KEY_RECOMMENDATION_ALGORITHM, null)
+                ?: when (homeProvider.value) {
+                    HomeProvider.APPLE -> RecommendationAlgorithm.APPLE.name
+                    HomeProvider.SPOTIFY -> RecommendationAlgorithm.SPOTIFY.name
+                    HomeProvider.YOUTUBE -> RecommendationAlgorithm.YOUTUBE.name
+                },
+        )
         // An install that still has the removed engine's name in its
         // preferences fails the lookup and lands on the one engine there is.
         automixEngine.value = runCatching {
@@ -2113,6 +2130,12 @@ object AppSettings {
         // process dies is a switch that reports success and comes back on the
         // old provider — which is exactly what it did.
         prefs.edit().putString(KEY_HOME_PROVIDER, value.name).commit()
+    }
+
+    /** Records the recommendation algorithm used by Home, Flow and Autoplay. */
+    fun setRecommendationAlgorithm(value: RecommendationAlgorithm) {
+        recommendationAlgorithm.value = value
+        prefs.edit().putString(KEY_RECOMMENDATION_ALGORITHM, value.name).commit()
     }
 
     /**
@@ -3208,6 +3231,7 @@ object AppSettings {
     private const val KEY_AUTO_UPGRADE_LOCAL_STORAGE = "auto_upgrade_local_storage"
     private const val KEY_AUTOMIX_PERFORMANCE_MODE = "automix_performance_mode"
     private const val KEY_HOME_PROVIDER = "home_provider"
+    private const val KEY_RECOMMENDATION_ALGORITHM = "recommendation_algorithm"
     private const val KEY_AUTOMIX_ENGINE = "automix_engine"
     private const val KEY_SKIP_SILENCE = "skip_silence"
     private const val KEY_OUTPUT_PCM_MODE = "output_pcm_mode"

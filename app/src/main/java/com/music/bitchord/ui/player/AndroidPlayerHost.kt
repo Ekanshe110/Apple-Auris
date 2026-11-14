@@ -17,6 +17,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.music.bitchord.R
 import com.music.bitchord.data.canvas.CanvasArtwork
 import com.music.bitchord.data.canvas.CanvasRepository
+import com.music.bitchord.data.apple.AppleEnrichment
+import com.music.bitchord.data.apple.AppleHomeSource
 import com.music.bitchord.data.listentogether.ListenTogether
 import com.music.bitchord.data.lyrics.LyricLine
 import com.music.bitchord.data.lyrics.LyricsTranslation
@@ -24,7 +26,7 @@ import com.music.bitchord.data.model.SearchFilter
 import com.music.bitchord.data.model.SearchResult
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.data.settings.AppSettings
-import com.music.bitchord.data.settings.HomeProvider
+import com.music.bitchord.data.settings.RecommendationAlgorithm
 import com.music.bitchord.data.settings.LastPlayerScreen
 import com.music.bitchord.data.YtMusicRepository
 import com.music.bitchord.download.Downloads
@@ -166,14 +168,34 @@ class AndroidPlayerHost(context: Context) : PlayerHost {
             // Whose radio it is depends on the provider: on a Spotify session
             // it is Spotify's own station, and on a YouTube session YouTube
             // Music's radio.
-            QueueSuggestion.SIMILAR ->
-                if (AppSettings.homeProvider.value == HomeProvider.SPOTIFY) {
-                    runCatching {
+            QueueSuggestion.SIMILAR -> {
+                val algorithm = AppSettings.recommendationAlgorithm.value
+                val candidates = mutableListOf<Song>()
+                if (algorithm.includes(RecommendationAlgorithm.SPOTIFY)) {
+                    candidates += runCatching {
                         com.music.bitchord.data.spotify.SpotifyAlgorithm.more(song, 12)
                     }.getOrDefault(emptyList())
-                } else {
-                    runCatching { YtMusicRepository.radio(song.videoId).getOrNull() }.getOrNull().orEmpty()
                 }
+                if (algorithm.includes(RecommendationAlgorithm.YOUTUBE)) {
+                    candidates += runCatching {
+                        YtMusicRepository.radio(song.videoId).getOrNull()
+                    }.getOrNull().orEmpty()
+                }
+                if (algorithm.includes(RecommendationAlgorithm.APPLE)) {
+                    candidates += AppleHomeSource.tracks(12).getOrNull().orEmpty()
+                }
+                val merged = candidates.distinctBy { it.videoId }
+                if (AppSettings.appleRichModeEnabled) {
+                    // Strict Apple mode must not show a generic row as if it
+                    // were an Apple recommendation. Enrichment happens here,
+                    // on the user-requested queue path, never on ExoPlayer's
+                    // loader thread.
+                    AppleEnrichment.enrich(merged)
+                        .filter { !it.appleCatalogId.isNullOrBlank() }
+                } else {
+                    merged
+                }
+            }
 
             // The artist's own page when the row knew who they are, and a
             // search by name when it did not — a row from a playlist or a home

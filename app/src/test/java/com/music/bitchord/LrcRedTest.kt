@@ -7,6 +7,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import kotlinx.coroutines.runBlocking
 import org.junit.Test
 
 /**
@@ -72,6 +73,44 @@ class LrcRedTest {
     fun `the same title by somebody else is not a match`() {
         assertNull(LrcRed.best(hits(tumHiHoSearch), "Tum Hi Ho", "Imazee Fan", 163_000))
         assertNull(LrcRed.best(hits(tumHiHoSearch), "Tum Hi Ho", "Arijit Singh", 200_000))
+    }
+
+    @Test
+    fun `strict Apple lyrics use the exact ISRC document`() = runBlocking {
+        var requested = ""
+        val lines = LrcRed.lyrics(
+            title = "Test Song",
+            artist = "Test Artist",
+            durationMs = 180_000,
+            isrc = "GBMA22047592",
+            get = { url ->
+                requested = url
+                blindingLights
+            },
+            allowSearch = false,
+        )
+
+        assertEquals("https://lrc.red/s/GBMA22047592.ttml", requested)
+        assertNotNull(lines)
+    }
+
+    @Test
+    fun `strict Apple lyrics never fall back to a name search`() = runBlocking {
+        var requested = ""
+        val lines = LrcRed.lyrics(
+            title = "Test Song",
+            artist = "Test Artist",
+            durationMs = 180_000,
+            isrc = null,
+            get = { url ->
+                requested = url
+                blindingLights
+            },
+            allowSearch = false,
+        )
+
+        assertNull(lines)
+        assertEquals("", requested)
     }
 
     @Test

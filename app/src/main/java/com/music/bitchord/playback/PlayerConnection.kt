@@ -34,6 +34,7 @@ import com.music.bitchord.data.model.durationMillis
 import com.music.bitchord.data.settings.AppSettings
 import com.music.bitchord.data.sources.SourceRegistry
 import com.music.bitchord.data.sources.TrackMatcher
+import com.music.bitchord.download.AudioIdentity
 import com.music.bitchord.download.Downloads
 import com.music.bitchord.ui.rememberIsForeground
 import kotlinx.coroutines.Dispatchers
@@ -279,6 +280,8 @@ fun Song.toSongBundle(): Bundle = bundleOf(
     "playbackSourceType" to playbackSourceType?.name,
     "playbackSourceId" to playbackSourceId,
     "isExplicit" to (isExplicit ?: false),
+    "contentRating" to contentRating,
+    "isrc" to isrc,
     // `bundleOf` has no overload for a list of strings, so the two halves of
     // the credits go in afterwards.
 ).apply {
@@ -309,6 +312,8 @@ fun songFromBundle(b: Bundle): Song = Song(
     playbackSourceType = b.getString("playbackSourceType")?.let { runCatching { com.music.bitchord.data.model.PlaybackSourceType.valueOf(it) }.getOrNull() },
     playbackSourceId = b.getString("playbackSourceId"),
     isExplicit = if (b.containsKey("isExplicit")) b.getBoolean("isExplicit") else null,
+    contentRating = b.getString("contentRating"),
+    isrc = b.getString("isrc"),
 )
 
 /** Flushes the current radio queue to disk before reporting that it started. */
@@ -494,6 +499,8 @@ fun MediaItem.toSong() = Song(
     sourceQuality = mediaMetadata.extras?.getString(EXTRA_SOURCE_QUALITY),
     appleCatalogId = mediaMetadata.extras?.getString(EXTRA_APPLE_CATALOG_ID),
     appleLookupError = mediaMetadata.extras?.getString(EXTRA_APPLE_LOOKUP_ERROR),
+    contentRating = mediaMetadata.extras?.getString(EXTRA_CONTENT_RATING),
+    isrc = mediaMetadata.extras?.getString(EXTRA_ISRC),
 )
 
 /** @see Song.fromAutoplay */
@@ -598,6 +605,8 @@ internal const val EXTRA_APPLE_LOOKUP_ERROR = "bitchord.appleLookupError"
  */
 private const val EXTRA_DURATION = "bitchord.durationText"
 private const val EXTRA_EXPLICIT = "bitchord.explicit"
+private const val EXTRA_CONTENT_RATING = "bitchord.contentRating"
+private const val EXTRA_ISRC = "bitchord.isrc"
 private const val EXTRA_IS_VIDEO = "bitchord.isVideo"
 private const val EXTRA_VIDEO_ORIGIN = "bitchord.isVideoOrigin"
 
@@ -694,9 +703,82 @@ internal fun Song.requiresStrictAppleIdentity(): Boolean {
     }
 }
 
+/** Exact Apple identity used by playback and download admission. */
+internal data class ApplePlaybackIdentity(
+    val sourceId: String,
+    val appleCatalogId: String,
+    val originalVideoId: String,
+    val durationMs: Long = 0L,
+)
+
+/**
+ * Builds the exact Apple identity from already-separated facts.
+ *
+ * Pure on purpose: admission rules must be testable without Android settings
+ * or a configured addon. A source-backed Apple row keeps its pinned source and
+ * stream id. An enriched discovery row uses Apple's catalogue id with the
+ * current exact Apple source. Neither may be completed by name matching.
+ */
+internal fun applePlaybackIdentityFor(
+    originalVideoId: String,
+    sourceId: String?,
+    sourceIsApple: Boolean,
+    appleCatalogId: String?,
+    currentAppleSourceId: String?,
+    appleModeEnabled: Boolean,
+): ApplePlaybackIdentity? {
+    if (!appleModeEnabled) return null
+    val catalog = appleCatalogId?.takeIf(String::isNotBlank) ?: return null
+    val source = when {
+        sourceId != null && sourceIsApple -> sourceId
+        sourceId == null -> currentAppleSourceId?.takeIf(String::isNotBlank) ?: return null
+        else -> return null
+    }
+    return ApplePlaybackIdentity(
+        sourceId = source,
+        appleCatalogId = catalog,
+        originalVideoId = originalVideoId,
+    )
+}
+
+/** This row's exact Apple identity, or null when it has none. */
+internal fun Song.applePlaybackIdentity(): ApplePlaybackIdentity? {
+    val sourceTrack = SourceRegistry.parseTrackKey(videoId)
+    return applePlaybackIdentityFor(
+        originalVideoId = videoId,
+        sourceId = sourceTrack?.first,
+        sourceIsApple = sourceTrack?.first?.let(SourceRegistry::isAppleRole) == true,
+        appleCatalogId = appleCatalogId,
+        currentAppleSourceId = playbackSourceId?.takeIf(SourceRegistry::isAppleRole)
+            ?: SourceRegistry.appleCatalogConfig()?.id,
+        appleModeEnabled = AppSettings.appleRichModeEnabled,
+    )
+}
+
 /** A watch URI that refuses generic YouTube/source substitution. */
 internal fun Song.strictAppleWatchUri(): String =
     "bitchord://watch?v=$videoId${matchQuery()}&$APPLE_STRICT_PARAMETER=1"
+
+/**
+ * Playback URI for one exact Apple recording.
+ *
+ * `t` remains the addon's stream id when the row already has one. `c` carries
+ * Apple's catalogue id used for cache identity; `orig` carries the old row id
+ * for provenance and eviction only. The resolver still receives the exact id
+ * it expects.
+ */
+private fun Song.applePlaybackUri(identity: ApplePlaybackIdentity): String {
+    val sourceTrack = SourceRegistry.parseTrackKey(videoId)
+    val streamId = sourceTrack?.second ?: identity.appleCatalogId
+    return buildString {
+        append(SourceRegistry.trackUri(identity.sourceId, streamId))
+        append("&").append(AudioCache.APPLE_CATALOG_PARAMETER).append("=")
+        append(Uri.encode(identity.appleCatalogId))
+        append("&").append(AudioCache.APPLE_ORIGINAL_PARAMETER).append("=")
+        append(Uri.encode(identity.originalVideoId))
+        append(matchQuery())
+    }
+}
 
 private fun Song.matchQuery(): String = buildString {
     append("&n=").append(Uri.encode(title))
@@ -704,6 +786,8 @@ private fun Song.matchQuery(): String = buildString {
     TrackMatcher.secondsOf(durationText)?.let { append("&d=").append(it) }
     albumName?.takeIf { it.isNotBlank() }?.let { append("&l=").append(Uri.encode(it)) }
     isExplicit?.let { append("&e=").append(if (it) "1" else "0") }
+    contentRating?.let { append("&r=").append(Uri.encode(it)) }
+    isrc?.let { append("&isrc=").append(Uri.encode(it)) }
     // `m` controls source routing, not player policy. A converted catalogue
     // track keeps [isVideoOrigin] for AutoMix, but is intentionally audio here
     // so the normal source-quality upgrade path can improve it.
@@ -762,6 +846,11 @@ internal fun preferLocalFile(hasLocalFile: Boolean): Boolean = hasLocalFile
 
 fun Song.toMediaItem(parentBrowseId: String? = null, playLocalFile: Boolean = true): MediaItem {
     val sourceTrack = SourceRegistry.parseTrackKey(videoId)
+    val appleIdentity = applePlaybackIdentity()
+    // In Apple mode a discovery row is an Apple identity even when enrichment
+    // failed. Such a row must not inherit a pre-Apple download merely because
+    // both rows have the same YouTube/Spotify id.
+    val isolatePreAppleDownload = AppSettings.appleRichModeEnabled && sourceTrack == null
     // A row from search or a playlist carries no file of its own, but the track
     // may still be on disk from a download — see [Downloads.saved].
     //
@@ -786,8 +875,26 @@ fun Song.toMediaItem(parentBrowseId: String? = null, playLocalFile: Boolean = tr
     // [MediaItem.toSong], so an item waiting in the live queue can carry a URI
     // that has become stale since it was created. Checking only the lookup
     // leaves that path unguarded.
-    val offlineUri = localUri?.takeUnless(Downloads::isMissingLocalFile)
-        ?: Downloads.verifiedSavedUri(videoId)
+    val directLocalUri = videoId.startsWith("content://") || videoId.startsWith("file://")
+    val offlineUri = when {
+        // A file/content URI is already the recording's exact address. It must
+        // not be replaced by a saved row merely because that row also carries
+        // Apple metadata.
+        directLocalUri -> null
+        appleIdentity != null -> {
+            val expected = AudioIdentity(
+                provider = "Apple Music",
+                sourceId = appleIdentity.sourceId,
+                originalVideoId = appleIdentity.originalVideoId,
+                appleCatalogId = appleIdentity.appleCatalogId,
+                durationMs = TrackMatcher.secondsOf(durationText)?.let { it * 1_000L },
+            )
+            Downloads.verifiedSavedUri(videoId, expected)
+        }
+        isolatePreAppleDownload -> null
+        else -> localUri?.takeUnless(Downloads::isMissingLocalFile)
+            ?: Downloads.verifiedSavedUri(videoId)
+    }
     // The file is what plays, whenever there is one — see [preferLocalFile].
     // A stream that fails still falls back to the file via
     // [PlaybackService.fallbackOnlineStreamToFile]; a file that has gone
@@ -813,6 +920,10 @@ fun Song.toMediaItem(parentBrowseId: String? = null, playLocalFile: Boolean = tr
         // YouTube track: its URL is the whole of its identity, and there is
         // nothing to resolve — it plays where it lies.
         videoId.startsWith("http://") || videoId.startsWith("https://") -> videoId
+        // An exact Apple identity always wins over the row's former generic
+        // identity. The resolver gets the addon's exact stream id; the cache
+        // gets Apple's catalogue id.
+        appleIdentity != null -> applePlaybackUri(appleIdentity)
         // Title, artist and runtime ride along in the URI because they are what
         // a cross-source match is made on, and the resolver runs on ExoPlayer's
         // loader thread with nothing but a DataSpec in hand — see
@@ -848,6 +959,12 @@ fun Song.toMediaItem(parentBrowseId: String? = null, playLocalFile: Boolean = tr
         // match is made on them, which the loader thread has no other way to
         // reach.
         else -> "bitchord://watch?v=$videoId${matchQuery()}"
+    }
+    if (appleIdentity != null) {
+        // Validation is background work. The player thread only reads an
+        // in-memory state; descriptor comparison and eviction happen in
+        // AudioCache's IO scope.
+        AudioCache.scheduleAppleValidation(Uri.parse(applePlaybackUri(appleIdentity)))
     }
     return MediaItem.Builder()
         .setMediaId(videoId)
@@ -902,7 +1019,8 @@ fun Song.toMediaItem(parentBrowseId: String? = null, playLocalFile: Boolean = tr
                     offlineUri != null || durationText != null || downloadFormat != null ||
                     sourceQuality != null || appleCatalogId != null ||
                     appleLookupError != null || artistId != null || albumId != null || setVideoId != null ||
-                    isExplicit != null || isVideo || isVideoOrigin || radioName != null ||
+                    isExplicit != null || contentRating != null || isrc != null ||
+                    isVideo || isVideoOrigin || radioName != null ||
                     playbackSource != null || playbackSourceType != null || playbackSourceId != null ||
                     parentBrowseId != null
                 ) {
@@ -933,6 +1051,8 @@ fun Song.toMediaItem(parentBrowseId: String? = null, playLocalFile: Boolean = tr
                             EXTRA_ALBUM_ID to albumId,
                             EXTRA_SET_VIDEO_ID to setVideoId,
                             EXTRA_EXPLICIT to isExplicit,
+                            EXTRA_CONTENT_RATING to contentRating,
+                            EXTRA_ISRC to isrc,
                             EXTRA_IS_VIDEO to isVideo,
                             EXTRA_VIDEO_ORIGIN to isVideoOrigin,
                         ),

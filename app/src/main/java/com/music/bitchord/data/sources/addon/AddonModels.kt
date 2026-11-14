@@ -234,6 +234,12 @@ data class AddonLibraryItem(
     @SerialName("album") val album: String = "",
     @SerialName("artworkURL") val artworkURL: String = "",
     @SerialName("duration") val duration: Double? = null,
+    /** Apple's catalogue rating: `explicit`, `clean`, or absent. */
+    @SerialName("contentRating") val contentRating: String? = null,
+    /** Explicit-content flag as published by the catalogue. */
+    @SerialName("explicit") val explicit: Boolean? = null,
+    /** ISRC naming this exact recording, when the catalogue published one. */
+    @SerialName("isrc") val isrc: String? = null,
 ) {
     val durationSec: Int? get() = duration?.takeIf { it > 0 }?.toInt()
     val artwork: String? get() = artworkURL.ifBlank { null }
@@ -266,6 +272,12 @@ data class AddonSearchResponse(
     @SerialName("tracks") val tracks: List<AddonTrack> = emptyList(),
 )
 
+/** A recommendation feed returned by an addon's optional `/recommendations` route. */
+@Serializable
+data class AddonRecommendationsResponse(
+    @SerialName("tracks") val tracks: List<AddonTrack> = emptyList(),
+)
+
 @Serializable
 data class AddonTrack(
     @SerialName("id") val id: String = "",
@@ -289,6 +301,12 @@ data class AddonTrack(
     @SerialName("audioModes") val audioModes: List<String> = emptyList(),
     /** Some addons state it outright instead of, or as well as, in [audioModes]. */
     @SerialName("atmos") val atmos: Boolean? = null,
+    /** Apple's catalogue rating: `explicit`, `clean`, or absent. */
+    @SerialName("contentRating") val contentRating: String? = null,
+    /** Explicit-content flag as published by the catalogue. */
+    @SerialName("explicit") val explicit: Boolean? = null,
+    /** ISRC naming this exact recording, when the catalogue published one. */
+    @SerialName("isrc") val isrc: String? = null,
     /**
      * A stream URL for the row itself. When present the spec says the host
      * skips the `/stream` call entirely, and so does this app — one round trip

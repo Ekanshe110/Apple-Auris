@@ -168,7 +168,6 @@ import com.music.bitchord.data.model.SearchHistoryEntity
 import com.music.bitchord.ui.onboarding.OnboardingState
 import com.music.bitchord.ui.onboarding.SetupWizard
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import com.music.bitchord.data.model.durationMillis
 import com.music.bitchord.data.scrobbling.LastFM
@@ -267,8 +266,10 @@ import com.music.bitchord.playback.StreamChoice
 import com.music.bitchord.playback.rememberMediaController
 import com.music.bitchord.playback.rememberPlayerState
 import com.music.bitchord.playback.setQueueDragActive
+import com.music.bitchord.ui.APPLE_CATALOGUE_MATCH_UNAVAILABLE
 import com.music.bitchord.ui.MainViewModel
 import com.music.bitchord.ui.SearchSource
+import com.music.bitchord.ui.appleCatalogueMatchUnavailable
 import com.music.bitchord.ui.components.BottomFadeScrim
 import com.music.bitchord.ui.components.FloatingBarsTapGuard
 import com.music.bitchord.ui.components.BottomTab
@@ -276,7 +277,9 @@ import com.music.bitchord.ui.components.FLOATING_BAR_MAX_WIDTH
 import com.music.bitchord.ui.components.FloatingBottomBar
 import com.music.bitchord.ui.components.GlassFoldingNavBar
 import com.music.bitchord.ui.components.GlassNavBar
+import com.music.bitchord.ui.components.NavSearchBackAction
 import com.music.bitchord.ui.components.NavSearchState
+import com.music.bitchord.ui.components.backAction
 import com.music.bitchord.ui.components.floatingtabbar.FloatingTabBarScrollConnection
 import com.music.bitchord.ui.components.floatingtabbar.rememberFloatingTabBarScrollConnection
 import com.music.bitchord.ui.components.FrostedTopBar
@@ -672,18 +675,12 @@ private fun AppRootBox(content: @Composable BoxScope.() -> Unit) {
     }
 }
 
-/** Current Apple catalogue availability and its single owning source. */
-private data class AppleCatalogUiState(
-    val ready: Boolean,
-    val config: com.music.bitchord.data.sources.SourceConfig?,
-)
-
-/** Search sources offered for the current Apple catalogue configuration. */
-private fun visibleSearchSources(appleCatalogReady: Boolean): List<SearchSource> = buildList {
+/** Search sources offered while Apple mode is on or off. */
+internal fun visibleSearchSources(appleModeEnabled: Boolean): List<SearchSource> = buildList {
     add(SearchSource.YOUTUBE)
     add(SearchSource.SPOTIFY)
     add(SearchSource.LIBRARY)
-    if (appleCatalogReady) add(SearchSource.APPLE)
+    if (appleModeEnabled) add(SearchSource.APPLE)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1134,25 +1131,17 @@ private fun BitChordApp(
     val libraryState by viewModel.library.collectAsStateWithLifecycle()
     val filter by viewModel.filter.collectAsStateWithLifecycle()
     val searchSource by viewModel.searchSource.collectAsStateWithLifecycle()
-    // Collect the selected Apple config as Compose state. Reading
-    // StateFlow.value inside derivedStateOf does not subscribe to either
-    // flow, so the search source stayed unavailable after the provider or an
-    // addon config changed.
-    val appleCatalogConfig by SourceRegistry.configs
-        .map { configs ->
-            configs.firstOrNull {
-                it.kind == com.music.bitchord.data.sources.SourceKind.ADDON &&
-                    it.enabled && it.isComplete &&
-                    it.catalogRole == com.music.bitchord.data.sources.SourceCatalogRole.APPLE_MUSIC
-            }
+    // Apple mode owns the Search catalogue even before an addon is configured.
+    // A missing configuration is then an explicit search error, not a silent
+    // return to YouTube and not a reason to hide the Apple source.
+    val appleModeEnabled = homeProvider == HomeProvider.APPLE
+    val appleCatalogConfigs by SourceRegistry.configs.collectAsStateWithLifecycle()
+    val appleCatalogConfig = remember(appleCatalogConfigs, homeProvider) {
+        appleCatalogConfigs.firstOrNull {
+            it.kind == com.music.bitchord.data.sources.SourceKind.ADDON &&
+                it.enabled && it.isComplete &&
+                it.catalogRole == com.music.bitchord.data.sources.SourceCatalogRole.APPLE_MUSIC
         }
-        .collectAsStateWithLifecycle(initialValue = null)
-    val appleCatalogState = remember(appleCatalogConfig, homeProvider) {
-        AppleCatalogUiState(
-            ready = homeProvider == com.music.bitchord.data.settings.HomeProvider.APPLE &&
-                appleCatalogConfig != null,
-            config = appleCatalogConfig,
-        )
     }
     val libraryResults by viewModel.libraryResults.collectAsStateWithLifecycle()
     LaunchedEffect(selectedTab) {
@@ -1416,6 +1405,27 @@ private fun BitChordApp(
         queueNoticeId += 1
         queueNotice = QueueActionNotice(queueNoticeId, message)
     }
+    /**
+     * Stops an unresolved discovery row before a media item can be built.
+     *
+     * PlayerConnection already keeps such a row off generic YouTube routing,
+     * but a queue-time error arrives after the tap and can read as a playback
+     * failure. Apple mode instead says why the exact recording is unavailable.
+     */
+    val rejectUnavailableAppleSongs: (List<Song>) -> Boolean = { songs ->
+        if (!songs.any { song ->
+                appleCatalogueMatchUnavailable(song, AppSettings.appleRichModeEnabled)
+            }
+        ) {
+            false
+        } else {
+            Toast.makeText(context, APPLE_CATALOGUE_MATCH_UNAVAILABLE, Toast.LENGTH_LONG).show()
+            true
+        }
+    }
+    val rejectUnavailableAppleSong: (Song) -> Boolean = { song ->
+        rejectUnavailableAppleSongs(listOf(song))
+    }
     LaunchedEffect(queueNotice?.id) {
         val shown = queueNotice ?: return@LaunchedEffect
         delay(3_000)
@@ -1506,6 +1516,8 @@ private fun BitChordApp(
                 it.localUri,
                 it.appleCatalogId,
                 it.requiresStrictAppleIdentity(),
+                it.isrc,
+                it.isExplicit == true,
             )
         }
     }
@@ -1838,9 +1850,11 @@ private fun BitChordApp(
     }
 
     val playFrom: (List<Song>, Int, QueueSource) -> Unit = playFrom@{ allSongs, allIndex, source ->
+        val selectedSong = allSongs.getOrNull(allIndex)
+        if (rejectUnavailableAppleSongs(allSongs)) return@playFrom
         // A Spotify page lists songs it has not found on YouTube Music yet (or
         // never will); those can't be queued, so play the rest in their order.
-        if (allSongs.getOrNull(allIndex)?.isUnresolvedSpotify == true) return@playFrom
+        if (selectedSong?.isUnresolvedSpotify == true) return@playFrom
         val songs = allSongs.filterNot { it.isUnresolvedSpotify }
         val index = songs.indexOf(allSongs.getOrNull(allIndex)).coerceAtLeast(0)
         playRequestGeneration++
@@ -2052,7 +2066,8 @@ private fun BitChordApp(
      * remixes of the same song. Album, artist and playlist pages keep [play],
      * where the surrounding list *is* the thing the user asked for.
      */
-    val playRadio: (Song, QueueSource) -> Unit = { song, source ->
+    val playRadio: (Song, QueueSource) -> Unit = radio@{ song, source ->
+        if (rejectUnavailableAppleSong(song)) return@radio
         playRequestGeneration++
         activeRadioSeed = null
         scope.launch {
@@ -2115,7 +2130,8 @@ private fun BitChordApp(
      * destroy the queue already playing. Once ready, the whole old queue is
      * replaced in one Media3 operation.
      */
-    val startRadio: (Song) -> Unit = { song ->
+    val startRadio: (Song) -> Unit = radio@{ song ->
+        if (rejectUnavailableAppleSong(song)) return@radio
         val originalController = controller
         if (originalController != null && !refusedByHost()) {
             val request = ++playRequestGeneration
@@ -2242,7 +2258,8 @@ private fun BitChordApp(
             }
         }
     }
-    val addToQueue: (Song) -> Unit = { song ->
+    val addToQueue: (Song) -> Unit = queue@{ song ->
+        if (rejectUnavailableAppleSong(song)) return@queue
         scope.launch {
             if (refusedByHost()) return@launch
             // The end of what the user queued, not the end of the queue: a song
@@ -2274,7 +2291,8 @@ private fun BitChordApp(
             }
         }
     }
-    val playNext: (Song) -> Unit = { song ->
+    val playNext: (Song) -> Unit = queue@{ song ->
+        if (rejectUnavailableAppleSong(song)) return@queue
         scope.launch {
             if (refusedByHost()) return@launch
             controller?.let {
@@ -2381,8 +2399,9 @@ private fun BitChordApp(
      * shut, the current track carries on — so the count is said out loud, the
      * same way a batch download is.
      */
-    val queueSongs: (List<Song>, Boolean) -> Unit = { songs, next ->
+    val queueSongs: (List<Song>, Boolean) -> Unit = queue@{ songs, next ->
         if (songs.isNotEmpty()) {
+            if (rejectUnavailableAppleSongs(songs)) return@queue
             scope.launch {
                 if (refusedByHost()) return@launch
                 val c = controller
@@ -2545,6 +2564,10 @@ private fun BitChordApp(
                 title = item.title,
                 artist = InnertubeParser.artistFromSubtitle(item.subtitle),
                 thumbnailUrl = item.thumbnailUrl,
+                durationText = item.durationText,
+                isExplicit = item.isExplicit,
+                contentRating = item.contentRating,
+                isrc = item.isrc,
                 appleCatalogId = item.appleCatalogId,
                 appleLookupError = item.appleLookupError,
             )
@@ -2586,9 +2609,10 @@ private fun BitChordApp(
      * library of forty tracks that plays four of them is not a library, it is
      * a preview.
      */
-    val playQuickPicks: (Boolean) -> Unit = { shuffled ->
+    val playQuickPicks: (Boolean) -> Unit = quickPicks@{ shuffled ->
         val songs = quickPicksSongs
         if (songs.isNotEmpty()) {
+            if (rejectUnavailableAppleSongs(songs)) return@quickPicks
             playRequestGeneration++
             activeRadioSeed = null
             scope.launch {
@@ -2761,11 +2785,6 @@ private fun BitChordApp(
         }
         viewModel.setSearchSource(source)
     }
-    LaunchedEffect(searchSource, appleCatalogState.ready) {
-        if (searchSource == SearchSource.APPLE && searchSource !in visibleSearchSources(appleCatalogState.ready)) {
-            onSearchSourceChange(SearchSource.YOUTUBE)
-        }
-    }
     // The search field's own text and caret — see [NavSearchState.textValue].
     //
     // Kept here, above the bar, because the bar is rebuilt every time it
@@ -2790,6 +2809,14 @@ private fun BitChordApp(
     // that: coming back from a playlist found the page on Playlists again,
     // whatever segment it had been left on.
     var librarySegment by rememberSaveable { mutableStateOf(LibrarySegment.Playlists) }
+    // The arrow and hardware Back leave visual search the same way: both
+    // layers close together and the previous tab returns. The folding bar
+    // therefore restores its now-playing accessory in the same animation.
+    val exitVisualSearch: () -> Unit = {
+        searchKeyboardActive = false
+        searchVisualActive = false
+        selectedTab = lastSearchTab.takeIf { it != TAB_SEARCH } ?: TAB_HOME
+    }
     val navSearchState = NavSearchState(
         visualActive = searchVisualActive,
         keyboardActive = searchKeyboardActive,
@@ -2808,7 +2835,7 @@ private fun BitChordApp(
         onToggleSource = {
             // Cycle only through the sources currently offered. Apple is
             // additive and never displaces Spotify.
-            val currentSources = visibleSearchSources(appleCatalogState.ready)
+            val currentSources = visibleSearchSources(appleModeEnabled)
             onSearchSourceChange(
                 currentSources[
                     (currentSources.indexOf(searchSource) + 1)
@@ -2835,11 +2862,7 @@ private fun BitChordApp(
             searchKeyboardActive = false
         },
         onTapBar = { searchKeyboardActive = true },
-        onExit = {
-            searchKeyboardActive = false
-            searchVisualActive = false
-            selectedTab = lastSearchTab.takeIf { it != TAB_SEARCH } ?: TAB_HOME
-        },
+        onExit = exitVisualSearch,
         onCloseKeyboard = { searchKeyboardActive = false },
         focusRequester = searchNavFocus,
     )
@@ -3484,6 +3507,14 @@ private fun BitChordApp(
 
         // A pushed album/artist/playlist page replaces the tab content but
         // leaves the tab bar and mini player in place.
+        //
+        // Visual search owns one root Back layer. It is declared before every
+        // detail/overlay handler, so a layer drawn above search still wins.
+        // Keyboard Back remains nested in the folding bar and closes only the
+        // keyboard; visual Back leaves search and returns to the previous tab.
+        BackHandler(enabled = navSearchState.backAction() == NavSearchBackAction.EXIT_VISUAL_SEARCH) {
+            navSearchState.onExit()
+        }
         // Replay's three layers unwind in the order they were opened. Ahead of
         // every other handler because they are drawn over everything else.
         BackHandler(enabled = showReplayShare) { showReplayShare = false }
@@ -3567,7 +3598,7 @@ private fun BitChordApp(
                 !showSources && !showListenTogether && !showEqualizer && !showReplay && selectedMoodGenre == null &&
                 !showDiscord && !showHistory && !showFlow && !showQuickPicks && !showGenres &&
                 !showAudiobooks && openAudiobook == null && itunesPodcastId == null &&
-                selectedTab != TAB_HOME,
+                !searchVisualActive && selectedTab != TAB_HOME,
         ) {
             selectedTab = TAB_HOME
         }
@@ -4428,7 +4459,7 @@ private fun BitChordApp(
                             contentPadding = listPadding,
                         )
                     } else if (key == "apple_library") {
-                        val appleConfig = appleCatalogState.config
+                        val appleConfig = appleCatalogConfig
                         if (appleConfig == null) {
                             Text(
                                 text = "Apple Music library is not configured",
@@ -5236,7 +5267,7 @@ private fun BitChordApp(
                             // The settings page's own two-state selector, so the
                             // app has one look for "pick one of these".
                             sourceSwitcher = {
-                                val currentSources = visibleSearchSources(appleCatalogState.ready)
+                                val currentSources = visibleSearchSources(appleModeEnabled)
                                 SegmentedControl(
                                     options = currentSources.map { source ->
                                         when (source) {

@@ -622,6 +622,12 @@ internal object SpotifyHomeSource {
                 thumbnailUrl = song.thumbnailUrl ?: track.imageUrl,
                 videoId = song.videoId,
                 browseId = null,
+                durationText = song.durationText,
+                isExplicit = song.isExplicit,
+                contentRating = song.contentRating,
+                isrc = song.isrc,
+                appleCatalogId = song.appleCatalogId,
+                appleLookupError = song.appleLookupError,
             )
         }
 

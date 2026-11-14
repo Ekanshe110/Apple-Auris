@@ -15,6 +15,24 @@ import java.util.Collections
 import java.util.Locale
 
 /**
+ * The catalogue role carried by a manifest, without treating library support
+ * as catalogue identity.
+ *
+ * Older addons do not publish `catalogueProvider` at all. During a rolling
+ * deployment an app can therefore meet an older manifest for a source it
+ * already knows is Apple's catalogue. A missing provider must preserve that
+ * role; an explicitly named non-Apple provider may clear it.
+ */
+internal fun catalogRoleFromManifest(
+    manifest: AddonManifest,
+    currentRole: SourceCatalogRole,
+): SourceCatalogRole = when {
+    manifest.catalogueProvider.isBlank() -> currentRole
+    manifest.isAppleMusicCatalog -> SourceCatalogRole.APPLE_MUSIC
+    else -> SourceCatalogRole.GENERIC
+}
+
+/**
  * A [MusicSource] backed by one addon server the user pointed at.
  *
  * The [config]'s [SourceConfig.baseUrl] is the addon's own URL — the thing
@@ -97,13 +115,10 @@ class AddonSource(
 
     private fun recordPolicy(manifest: AddonManifest) {
         // Catalogue identity is explicit and independent of library support.
-        // Always publish it, including generic: otherwise editing an Apple
-        // source to an addon without that identity leaves the old role behind.
-        val role = if (manifest.isAppleMusicCatalog) {
-            com.music.bitchord.data.sources.SourceCatalogRole.APPLE_MUSIC
-        } else {
-            com.music.bitchord.data.sources.SourceCatalogRole.GENERIC
-        }
+        // An older manifest may omit the identity during a rolling deploy; in
+        // that case the role already stored for this source remains true. An
+        // explicitly named non-Apple provider may clear it.
+        val role = catalogRoleFromManifest(manifest, live.catalogRole)
         SourceRegistry.updatePolicy(
             configId = config.id,
             allowDownloads = manifest.downloadsAllowed,
@@ -257,6 +272,13 @@ class AddonSource(
                         // alone sorts the one mix the listener turned Atmos on
                         // for *below* every stereo row — see
                         // [AddonTrack.isDolbyAtmos].
+                        isExplicit = track.explicit ?: when (track.contentRating?.lowercase(Locale.ROOT)) {
+                            "explicit" -> true
+                            "clean" -> false
+                            else -> null
+                        },
+                        contentRating = track.contentRating?.lowercase(Locale.ROOT),
+                        isrc = track.isrc?.trim()?.takeIf { it.isNotEmpty() },
                         sourceQuality = if (track.isDolbyAtmos) {
                             ModuleSource.DOLBY
                         } else {
@@ -266,6 +288,55 @@ class AddonSource(
                         // also the addon's track id for search results, but the
                         // library contract keeps catalog and stream ids apart;
                         // this field is the explicit catalogue identity.
+                        appleCatalogId = track.id.takeIf {
+                            SourceRegistry.config(config.id)?.catalogRole ==
+                                com.music.bitchord.data.sources.SourceCatalogRole.APPLE_MUSIC
+                        },
+                    )
+                }
+                .toList()
+        }
+    }
+
+    /**
+     * The addon's own recommendation feed, when it publishes one.
+     *
+     * Discovery only. Each row keeps the exact catalogue id supplied by the
+     * addon, and playback still goes through this source's ordinary stream
+     * route afterwards.
+     */
+    suspend fun recommendationsResult(limit: Int): Result<List<Song>> = withContext(Dispatchers.IO) {
+        if (limit <= 0) return@withContext Result.success(emptyList())
+        if (shutOut("recommendations")) {
+            return@withContext Result.failure(AddonException("Addon is switched off"))
+        }
+        client.recommendations(limit).map { tracks ->
+            tracks.asSequence()
+                .filter { it.id.isNotBlank() && it.title.isNotBlank() }
+                .take(limit)
+                .map { track ->
+                    rows[track.id] = track
+                    Song(
+                        videoId = SourceRegistry.trackKey(config.id, track.id),
+                        title = track.title,
+                        artist = track.artist,
+                        albumName = track.album.ifBlank { null },
+                        thumbnailUrl = track.artwork,
+                        durationText = track.durationSec?.let {
+                            "${it / 60}:${"%02d".format(Locale.ROOT, it % 60)}"
+                        },
+                        isExplicit = track.explicit ?: when (track.contentRating?.lowercase(Locale.ROOT)) {
+                            "explicit" -> true
+                            "clean" -> false
+                            else -> null
+                        },
+                        contentRating = track.contentRating?.lowercase(Locale.ROOT),
+                        isrc = track.isrc?.trim()?.takeIf { it.isNotEmpty() },
+                        sourceQuality = if (track.isDolbyAtmos) {
+                            ModuleSource.DOLBY
+                        } else {
+                            ModuleSource.qualityTier("${track.audioQuality} ${track.format}")
+                        },
                         appleCatalogId = track.id.takeIf {
                             SourceRegistry.config(config.id)?.catalogRole ==
                                 com.music.bitchord.data.sources.SourceCatalogRole.APPLE_MUSIC

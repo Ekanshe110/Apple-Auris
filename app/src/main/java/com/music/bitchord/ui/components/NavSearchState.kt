@@ -11,6 +11,18 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.text.input.TextFieldValue
 import com.music.bitchord.ui.SearchSource
 
+/** What one hardware Back press should do in the folding search stack. */
+internal enum class NavSearchBackAction {
+    /** Search owns neither Back layer. */
+    NONE,
+
+    /** The keyboard is open; close it without leaving visual search. */
+    CLOSE_KEYBOARD,
+
+    /** Visual search is open; leave it and restore the previous tab and player. */
+    EXIT_VISUAL_SEARCH,
+}
+
 @Immutable
 data class NavSearchState(
     val visualActive: Boolean = false,
@@ -38,5 +50,18 @@ data class NavSearchState(
     val onCloseKeyboard: () -> Unit = {},
     val focusRequester: FocusRequester = FocusRequester(),
 )
+
+/**
+ * The Back action for the current search layer.
+ *
+ * Keyboard search is nested: Back closes only the keyboard and leaves visual
+ * search in place. Once the keyboard is gone, Back leaves visual search and
+ * restores the previous tab together with the folding player stack.
+ */
+internal fun NavSearchState.backAction(): NavSearchBackAction = when {
+    keyboardActive -> NavSearchBackAction.CLOSE_KEYBOARD
+    visualActive -> NavSearchBackAction.EXIT_VISUAL_SEARCH
+    else -> NavSearchBackAction.NONE
+}
 
 val LocalNavSearchState = staticCompositionLocalOf { NavSearchState() }

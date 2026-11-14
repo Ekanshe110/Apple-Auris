@@ -158,6 +158,24 @@ data class Song(    val videoId: String,
      * cache and history and is shown instead of pretending the track was found.
      */
     val appleLookupError: String? = null,
+    /**
+     * Catalogue content rating, when the source published one.
+     *
+     * Apple's values are `explicit`, `clean`, or absent. [isExplicit] remains
+     * the convenient boolean used by matching and playback; this keeps the
+     * original rating so a clean row and an unknown row do not become the
+     * same fact merely because both are not explicit.
+     */
+    val contentRating: String? = null,
+    /**
+     * ISRC for this exact recording, when the catalogue published one.
+     *
+     * This names the recording independently of title and version wording.
+     * It is what lets the lyrics path fetch the raw Apple TTML document for
+     * an explicit master instead of matching lyrics by name and accidentally
+     * finding the clean edit.
+     */
+    val isrc: String? = null,
 ) {
     /** Legacy derived property: true if and only if [queueTier] is [QueueTier.AUTOPLAY]. */
     val fromAutoplay: Boolean get() = queueTier == QueueTier.AUTOPLAY
@@ -190,6 +208,8 @@ data class Song(    val videoId: String,
         playbackSourceId: String? = null,
         appleCatalogId: String? = null,
         appleLookupError: String? = null,
+        contentRating: String? = null,
+        isrc: String? = null,
     ) : this(
         videoId = videoId,
         title = title,
@@ -213,6 +233,8 @@ data class Song(    val videoId: String,
         localDateModifiedSeconds = localDateModifiedSeconds,
         sourceQuality = sourceQuality,
         isExplicit = isExplicit,
+        contentRating = contentRating,
+        isrc = isrc,
         playbackSource = playbackSource,
         playbackSourceType = playbackSourceType,
         playbackSourceId = playbackSourceId,
@@ -403,6 +425,14 @@ data class ShelfItem(
      * the queue instead of disappearing and allowing a generic substitute.
      */
     val appleLookupError: String? = null,
+    /** Runtime shown by providers that publish it on a discovery card. */
+    val durationText: String? = null,
+    /** Explicit-content state carried with the discovery row. */
+    val isExplicit: Boolean? = null,
+    /** Original catalogue content rating. */
+    val contentRating: String? = null,
+    /** ISRC naming the exact recording behind this card. */
+    val isrc: String? = null,
 )
 
 /** The signed-in Google account, as YouTube Music reports it. */

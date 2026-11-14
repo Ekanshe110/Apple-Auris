@@ -393,6 +393,24 @@ class AddonClient(
         }.map { it.tracks }
     }
 
+    /**
+     * The addon's own recommendation feed.
+     *
+     * Optional route used only by discovery. Playback still resolves every
+     * returned row through the normal `/stream` path, so selecting another
+     * recommendation algorithm never changes the audio backend.
+     */
+    suspend fun recommendations(limit: Int): Result<List<AddonTrack>> {
+        if (limit <= 0) return Result.success(emptyList())
+        val params = mapOf("limit" to limit.coerceAtMost(100).toString())
+        return searches.get(
+            key = "recommendations:${params.toString()}",
+            describe = { "▶ addon recommendations(${redact(baseUrl)}) limit=$limit" },
+        ) {
+            fetch<AddonRecommendationsResponse>(endpoint(listOf("recommendations"), params))
+        }.map { it.tracks }
+    }
+
     // ── Stream ────────────────────────────────────────────────────────────
 
     /**

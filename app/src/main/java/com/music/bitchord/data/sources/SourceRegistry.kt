@@ -555,6 +555,15 @@ object SourceRegistry {
         }
     }
 
+    /** The enabled Apple Music addon for recommendation discovery. */
+    fun appleRecommendationConfig(): SourceConfig? =
+        configs.value.firstOrNull {
+            it.kind == SourceKind.ADDON &&
+                it.enabled &&
+                it.isComplete &&
+                it.catalogRole == SourceCatalogRole.APPLE_MUSIC
+        }
+
     /** Whether [mediaId] names a track from the explicitly configured Apple source. */
     fun isAppleTrack(mediaId: String): Boolean {
         val parsed = parseTrackKey(mediaId) ?: return false
@@ -721,13 +730,14 @@ object SourceRegistry {
                     // The manifest is the source of truth for vendor identity.
                     // Catalogue identity is a manifest-level capability, not a
                     // side effect of optional authenticated-library support.
-                    // A missing identity therefore means generic and cannot
-                    // leave an edited source with a stale Apple role.
-                    catalogRole = if (detected.manifest.isAppleMusicCatalog) {
-                        SourceCatalogRole.APPLE_MUSIC
-                    } else {
-                        SourceCatalogRole.GENERIC
-                    },
+                    // An older manifest may omit the identity during a rolling
+                    // deploy, so preserve the role already stored for an
+                    // existing source. An explicitly named non-Apple provider
+                    // may clear it.
+                    catalogRole = catalogRoleFromManifest(
+                        detected.manifest,
+                        existing?.catalogRole ?: SourceCatalogRole.GENERIC,
+                    ),
                 ),
             )
             is DetectedFormat.ModuleIndex -> Result.success(

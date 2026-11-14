@@ -126,6 +126,12 @@ object YtMusicRepository {
                     thumbnailUrl = it.thumbnailUrl,
                     videoId = it.videoId,
                     browseId = null,
+                    durationText = it.durationText,
+                    isExplicit = it.isExplicit,
+                    contentRating = it.contentRating,
+                    isrc = it.isrc,
+                    appleCatalogId = it.appleCatalogId,
+                    appleLookupError = it.appleLookupError,
                 )
             },
         )

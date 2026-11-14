@@ -32,9 +32,9 @@ import java.util.Locale
  * never converts a provider id on ExoPlayer's loader thread and never asks a
  * metadata matcher to guess another recording.
  *
- * Lookups are bounded, cached, and shared between concurrent callers. A failed
- * lookup is remembered briefly as a failure too, so one unavailable Apple
- * account cannot turn every home shelf into the same repeated request.
+ * Lookups are bounded, cached, and shared between concurrent callers. A
+ * catalogue miss is remembered briefly, while a transient addon or transport
+ * failure is not cached and remains immediately retryable.
  */
 object AppleEnrichment {
 
@@ -44,20 +44,31 @@ object AppleEnrichment {
     private const val POSITIVE_CACHE_MS = 6 * 60 * 60 * 1000L
     private const val NEGATIVE_CACHE_MS = 5 * 60 * 1000L
 
+    /**
+     * Version of the catalogue matcher used by lookup keys.
+     *
+     * Bump this whenever matching changes. A cached miss made by an older
+     * matcher must not survive the new rule, so this version is part of every
+     * key and a changed matcher naturally reaches the catalogue again.
+     */
+    internal const val MATCHER_VERSION = 3
+
     private val lookupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lookupGate = Semaphore(MAX_CONCURRENT_LOOKUPS)
     private val inFlightLock = Mutex()
-    private val inFlight = mutableMapOf<LookupKey, Deferred<Result<String?>>>()
+    private val inFlight = mutableMapOf<LookupKey, Deferred<Result<AppleResolution?>>>()
 
     private data class LookupKey(
+        val matcherVersion: Int,
         val sourceIdentity: String,
         val title: String,
         val artist: String,
         val durationSec: Long?,
+        val explicitPreference: Boolean?,
     )
 
     private data class CachedLookup(
-        val result: Result<String?>,
+        val result: Result<AppleResolution?>,
         val expiresAtMs: Long,
     )
 
@@ -66,6 +77,14 @@ object AppleEnrichment {
             override fun removeEldestEntry(eldest: Map.Entry<LookupKey, CachedLookup>) =
                 size > MAX_CACHE_ENTRIES
         },
+    )
+
+    /** One exact Apple catalogue match, with the rating and recording identity it carried. */
+    internal data class AppleResolution(
+        val id: String,
+        val isExplicit: Boolean?,
+        val contentRating: String?,
+        val isrc: String?,
     )
 
     /**
@@ -122,16 +141,19 @@ object AppleEnrichment {
         return songs.map { song ->
             val result = results[song.appleLookupKey(sourceIdentity)] ?: return@map song
             result.fold(
-                onSuccess = { appleId ->
-                    if (appleId.isNullOrBlank()) {
+                onSuccess = { resolution ->
+                    if (resolution == null) {
                         song.copy(
                             appleCatalogId = null,
                             appleLookupError = "Apple Music catalogue not found",
                         )
                     } else {
                         song.copy(
-                            appleCatalogId = appleId,
+                            appleCatalogId = resolution.id,
                             appleLookupError = null,
+                            isExplicit = resolution.isExplicit,
+                            contentRating = resolution.contentRating,
+                            isrc = resolution.isrc,
                         )
                     }
                 },
@@ -156,10 +178,12 @@ object AppleEnrichment {
             SourceRegistry.parseTrackKey(videoId) == null
 
     private fun Song.appleLookupKey(sourceIdentity: String): LookupKey = LookupKey(
+        matcherVersion = MATCHER_VERSION,
         sourceIdentity = sourceIdentity,
-        title = normalized(title),
+        title = normalizedTitle(title),
         artist = normalized(artist),
         durationSec = durationMillis().takeIf { it > 0 }?.div(1000),
+        explicitPreference = explicitState(this),
     )
 
     /** A private, collision-resistant identity for this addon and account. */
@@ -180,7 +204,7 @@ object AppleEnrichment {
         song: Song,
         source: AddonSource,
         key: LookupKey,
-    ): Result<String?> {
+    ): Result<AppleResolution?> {
         cached(key)?.let { return it.result }
 
         val deferred = inFlightLock.withLock {
@@ -190,14 +214,19 @@ object AppleEnrichment {
         }
         return try {
             val result = deferred.await()
-            cache[key] = CachedLookup(
-                result = result,
-                expiresAtMs = System.currentTimeMillis() + if (result.getOrNull().isNullOrBlank()) {
-                    NEGATIVE_CACHE_MS
-                } else {
-                    POSITIVE_CACHE_MS
-                },
-            )
+            // A transport or addon failure is not evidence that the catalogue
+            // lacks the recording. Keep it out of the cache so the next caller
+            // retries instead of inheriting a temporary outage as a miss.
+            if (shouldCacheLookup(result)) {
+                cache[key] = CachedLookup(
+                    result = result,
+                    expiresAtMs = System.currentTimeMillis() + if (result.getOrNull() == null) {
+                        NEGATIVE_CACHE_MS
+                    } else {
+                        POSITIVE_CACHE_MS
+                    },
+                )
+            }
             result
         } finally {
             inFlightLock.withLock {
@@ -205,6 +234,9 @@ object AppleEnrichment {
             }
         }
     }
+
+    /** Whether a lookup answer is durable enough to remember. */
+    internal fun shouldCacheLookup(result: Result<*>): Boolean = result.isSuccess
 
     private fun cached(key: LookupKey): CachedLookup? {
         val entry = cache[key] ?: return null
@@ -215,8 +247,8 @@ object AppleEnrichment {
         return entry
     }
 
-    /** One exact Apple catalogue lookup. No title-only or nearest-result choice. */
-    private suspend fun performLookup(song: Song, source: AddonSource): Result<String?> {
+    /** One Apple catalogue lookup, followed by the pure recording matcher. */
+    private suspend fun performLookup(song: Song, source: AddonSource): Result<AppleResolution?> {
         val query = listOf(song.title, song.artist)
             .filter { it.isNotBlank() }
             .joinToString(" ")
@@ -227,39 +259,190 @@ object AppleEnrichment {
                 TrackLog.w(TAG, "Apple enrichment failed for '${song.title}': ${failure.message}")
                 return Result.failure(failure)
             }
-        return Result.success(exactAppleId(song, rows))
+        return Result.success(exactAppleMatch(song, rows)?.toResolution())
+    }
+
+    internal data class AppleMatch(
+        val id: String,
+        val artistOverlap: Int,
+        val titleStrength: Int,
+        val ratingPreference: Int,
+        val isExplicit: Boolean?,
+        val contentRating: String?,
+        val isrc: String?,
+    ) {
+        fun toResolution(): AppleResolution = AppleResolution(
+            id = id,
+            isExplicit = isExplicit,
+            contentRating = contentRating,
+            isrc = isrc,
+        )
     }
 
     /**
-     * The one exact Apple id for [song], or null when there is no unique answer.
+     * The Apple id for [song], or null when no row identifies that recording.
      *
      * Kept pure so the identity rule can be tested without a network or an
-     * addon. A title-only hit, a near artist, or two equally plausible Apple
-     * rows are all null: choosing one would risk playing another recording.
+     * addon. A title-only hit, a near artist, an unknown candidate runtime
+     * when the wanted runtime is known, and a runtime outside the tolerance
+     * are all refused. Duplicate catalogue editions of one recording are not
+     * an ambiguity: rating compatibility comes first, then the fullest artist
+     * credit, the closest title spelling, and finally the stable Apple id.
      */
-    internal fun exactAppleId(song: Song, candidates: List<Song>): String? {
-        val exactIdentity = candidates.filter { candidate ->
-            candidate.appleCatalogId?.isNotBlank() == true &&
-                normalized(candidate.title) == normalized(song.title) &&
-                normalized(candidate.artist) == normalized(song.artist)
-        }
-        if (exactIdentity.isEmpty()) return null
+    internal fun exactAppleId(song: Song, candidates: List<Song>): String? =
+        exactAppleMatch(song, candidates)?.id
 
-        val wantedSeconds = song.durationMillis().takeIf { it > 0 }?.div(1000)
-        val exact = if (wantedSeconds == null) {
-            exactIdentity
-        } else {
-            exactIdentity.filter { candidate ->
-                val duration = candidate.durationMillis().takeIf { it > 0 }?.div(1000)
-                duration == null || kotlin.math.abs(duration - wantedSeconds) <= 3
+    /** The exact Apple match for [song], including its catalogue metadata. */
+    internal fun exactAppleMatch(song: Song, candidates: List<Song>): AppleMatch? {
+        val wantedDuration = song.durationSeconds()
+        val wantedTitle = normalizedTitle(song.title)
+        if (wantedTitle.isBlank()) return null
+        val wantedExplicit = explicitState(song)
+        val wantedRating = song.contentRating?.lowercase(Locale.ROOT)
+
+        val matches = candidates.mapNotNull { candidate ->
+            val id = candidate.appleCatalogId?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val titleStrength = titleMatchStrength(song.title, candidate.title, wantedTitle)
+                ?: return@mapNotNull null
+            val artistOverlap = artistOverlap(song.artist, candidate.artist)
+                ?: return@mapNotNull null
+            val candidateDuration = candidate.durationSeconds()
+            if (
+                wantedDuration != null &&
+                (candidateDuration == null ||
+                    kotlin.math.abs(candidateDuration - wantedDuration) > DURATION_TOLERANCE_SEC)
+            ) {
+                return@mapNotNull null
             }
+            val candidateExplicit = explicitState(candidate)
+            val candidateRating = candidate.contentRating?.lowercase(Locale.ROOT)
+            // An explicit request never falls back to a clean master. This is
+            // a hard refusal, not a lower score: silently changing the words
+            // in the track is worse than reporting that the requested master
+            // was unavailable.
+            if (wantedExplicit == true && candidateExplicit != true) return@mapNotNull null
+            // A clean request keeps clean ahead of explicit. An unknown request
+            // prefers Apple's explicit master, which is the default the
+            // catalogue itself uses when the two editions otherwise agree.
+            val ratingPreference = when {
+                wantedExplicit == false -> if (candidateExplicit == true) 0 else 1
+                wantedRating == "clean" -> if (candidateRating == "clean") 1 else 0
+                else -> if (candidateExplicit == true) 1 else 0
+            }
+            AppleMatch(
+                id = id,
+                artistOverlap = artistOverlap,
+                titleStrength = titleStrength,
+                ratingPreference = ratingPreference,
+                isExplicit = candidateExplicit,
+                contentRating = candidateRating,
+                isrc = candidate.isrc?.trim()?.takeIf { it.isNotEmpty() },
+            )
         }
-        if (exact.size != 1) return null
-        return exact.single().appleCatalogId
+
+        return matches.minWithOrNull(
+            compareByDescending<AppleMatch> { it.ratingPreference }
+                .thenByDescending { it.artistOverlap }
+                .thenByDescending { it.titleStrength }
+                .thenBy { it.id },
+        )
+    }
+
+    /** Explicit state from the row's own flag, rating, or title marker. */
+    internal fun explicitState(song: Song): Boolean? = when {
+        song.isExplicit != null -> song.isExplicit
+        song.contentRating?.equals("explicit", ignoreCase = true) == true -> true
+        song.contentRating?.equals("clean", ignoreCase = true) == true -> false
+        EXPLICIT_TITLE_MARKER.containsMatchIn(song.title) -> true
+        else -> null
+    }
+
+    /** Whole seconds available from [Song]'s current `M:SS` duration text. */
+    private fun Song.durationSeconds(): Long? =
+        durationMillis().takeIf { it > 0 }?.div(1000)
+
+    /**
+     * How strongly two titles agree after catalogue packaging is removed.
+     *
+     * The normalized form drops parentheticals such as `(From "Movie")`, a
+     * trailing `From "Movie"` clause, and remix/edition suffixes. The raw
+     * punctuation-and-spacing form is kept as a tie-break, so a plainly named
+     * Apple row beats the same title carrying packaging when both identify
+     * the recording.
+     */
+    private fun titleMatchStrength(wantedRaw: String, candidateRaw: String, wantedTitle: String): Int? {
+        val candidateTitle = normalizedTitle(candidateRaw)
+        if (candidateTitle.isBlank() || candidateTitle != wantedTitle) return null
+        return if (normalized(candidateRaw) == normalized(wantedRaw)) 2 else 1
+    }
+
+    /**
+     * The title's recording identity, without catalogue packaging.
+     *
+     * Only known packaging is removed: a `From "..."` clause and the
+     * `[Explicit]` marker. Remix, live, acoustic and edition wording stays:
+     * those name different recordings, and collapsing them let an ordinary
+     * cut match a remix or an alternate edition.
+     */
+    internal fun normalizedTitle(value: String): String {
+        var text = EXPLICIT_TITLE_MARKER.replace(value, " ")
+        repeat(TITLE_PARENTHETICAL_PASSES) {
+            text = FROM_PARENTHETICAL.replace(text, " ")
+        }
+        text = FROM_TAIL.replace(text, " ")
+        return normalized(text)
+    }
+
+    /**
+     * The number of shared artist tokens, or null when the credits do not
+     * identify one artist strongly enough.
+     *
+     * One shared word is too weak: `Shaan` and `Shaan & Someone Else` are a
+     * near artist, not proof of the same recording. Two or more meaningful
+     * shared tokens are required unless the token sets are identical. A
+     * trailing `Topic` is an artist-channel role rather than part of the name
+     * and is ignored.
+     */
+    internal fun artistOverlap(wanted: String, candidate: String): Int? {
+        val wantedTokens = artistTokens(wanted)
+        val candidateTokens = artistTokens(candidate)
+        if (wantedTokens.isEmpty() || candidateTokens.isEmpty()) return null
+
+        val shared = wantedTokens.intersect(candidateTokens)
+        if (wantedTokens == candidateTokens) return shared.size
+        if (shared.size < MIN_ARTIST_OVERLAP_TOKENS) return null
+        if (shared.size * 4 < wantedTokens.size * 3) return null
+        return shared.size
+    }
+
+    /** Distinct artist tokens, with the YouTube artist-channel role removed. */
+    private fun artistTokens(value: String): Set<String> {
+        val tokens = value
+            .lowercase(Locale.ROOT)
+            .split(NON_ALNUM)
+            .filter { it.isNotEmpty() }
+            .toMutableList()
+        if (tokens.lastOrNull() == "topic") tokens.removeLast()
+        return tokens.toSet()
     }
 
     /** Letters and numbers only, so punctuation and spacing cannot split identity. */
     internal fun normalized(value: String): String =
         value.lowercase(Locale.ROOT)
-            .replace(Regex("[^\\p{L}\\p{N}]"), "")
+            .replace(NON_ALNUM, "")
+
+    private const val DURATION_TOLERANCE_SEC = 3L
+    private const val MIN_ARTIST_OVERLAP_TOKENS = 2
+    private const val TITLE_PARENTHETICAL_PASSES = 3
+
+    private val NON_ALNUM = Regex("""[^\p{L}\p{N}]+""")
+    private val FROM_PARENTHETICAL = Regex(
+        """\s*\(\s*from\b[^)]*\)""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val FROM_TAIL = Regex("""\s+[-–—]\s+from\b.*$""", RegexOption.IGNORE_CASE)
+    private val EXPLICIT_TITLE_MARKER = Regex(
+        """\s*[\[(]\s*explicit\s*[\])]""",
+        RegexOption.IGNORE_CASE,
+    )
 }

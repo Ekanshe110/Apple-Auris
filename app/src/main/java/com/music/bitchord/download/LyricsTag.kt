@@ -88,6 +88,8 @@ internal object LyricsTag {
                     prioritizeSyllableSync = AppSettings.prioritizeSyllableSync.value,
                     appleSongId = track.appleCatalogId,
                     strictApple = track.requiresStrictAppleIdentity(),
+                    isrc = track.isrc,
+                    isExplicit = track.isExplicit == true,
                 )
             }
         } catch (e: CancellationException) {

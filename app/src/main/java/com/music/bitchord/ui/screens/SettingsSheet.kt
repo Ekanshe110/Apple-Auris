@@ -170,6 +170,7 @@ import com.music.bitchord.data.settings.OutputPcmMode
 import com.music.bitchord.playback.AudioOutputStatus
 import com.music.bitchord.data.settings.AutomixPerformanceMode
 import com.music.bitchord.data.settings.HomeProvider
+import com.music.bitchord.data.settings.RecommendationAlgorithm
 import com.music.bitchord.util.AppRelaunch
 import com.music.bitchord.R
 import com.music.bitchord.data.sources.DeviceCodecs
@@ -233,6 +234,7 @@ fun SettingsScreen(
     val seamlessQualityUpgrade by AppSettings.seamlessQualityUpgrade.collectAsStateWithLifecycle()
     val automixPerformance by AppSettings.automixPerformanceMode.collectAsStateWithLifecycle()
     val homeProvider by AppSettings.homeProvider.collectAsStateWithLifecycle()
+    val recommendationAlgorithm by AppSettings.recommendationAlgorithm.collectAsStateWithLifecycle()
     val skipSilence by AppSettings.skipSilence.collectAsStateWithLifecycle()
     val spatialAudio by AppSettings.spatialAudio.collectAsStateWithLifecycle()
     val simulatedAtmos by AppSettings.simulatedAtmos.collectAsStateWithLifecycle()
@@ -341,6 +343,7 @@ fun SettingsScreen(
     var pickingDownloadQuality by remember { mutableStateOf(false) }
     var pickingAutomixPerformance by remember { mutableStateOf(false) }
     var pickingHomeProvider by remember { mutableStateOf(false) }
+    var pickingRecommendationAlgorithm by remember { mutableStateOf(false) }
     // What the last export or import did, shown on the row that did it rather
     // than as a toast: a backup is the one action here whose outcome nobody can
     // check by looking at the app afterwards. Held per direction, or an import's
@@ -923,6 +926,16 @@ fun SettingsScreen(
                     subtitle = stringResource(R.string.home_provider_subtitle),
                     value = homeProvider.localizedLabel(),
                     onClick = { pickingHomeProvider = true },
+                )
+            }
+            val recommendationTitle = stringResource(R.string.recommendation_algorithm)
+            row(recommendationTitle, "recommendation", "algorithm", "apple", "spotify", "youtube", "all") {
+                SettingsRow(
+                    icon = Icons.Rounded.AutoAwesome,
+                    title = recommendationTitle,
+                    subtitle = stringResource(R.string.recommendation_algorithm_subtitle),
+                    value = recommendationAlgorithm.label,
+                    onClick = { pickingRecommendationAlgorithm = true },
                 )
             }
             val skipSilenceTitle = stringResource(R.string.skip_silence)
@@ -2288,6 +2301,21 @@ fun SettingsScreen(
         }
     }
 
+    if (pickingRecommendationAlgorithm) {
+        ModalBottomSheet(
+            onDismissRequest = { pickingRecommendationAlgorithm = false },
+            containerColor = MaterialTheme.colorScheme.background,
+        ) {
+            RecommendationAlgorithmSheet(
+                selected = recommendationAlgorithm,
+                onSelect = { algorithm ->
+                    AppSettings.setRecommendationAlgorithm(algorithm)
+                    pickingRecommendationAlgorithm = false
+                },
+            )
+        }
+    }
+
     if (pickingAutomixPerformance) {
         ModalBottomSheet(
             onDismissRequest = { pickingAutomixPerformance = false },
@@ -2668,6 +2696,63 @@ private fun HomeProviderSheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                if (chosen) {
+                    Spacer(Modifier.width(12.dp))
+                    Icon(
+                        Icons.Rounded.Check,
+                        contentDescription = stringResource(R.string.selected),
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Recommendation-algorithm picker used by Home, Flow and Autoplay. */
+@Composable
+private fun RecommendationAlgorithmSheet(
+    selected: RecommendationAlgorithm,
+    onSelect: (RecommendationAlgorithm) -> Unit,
+) {
+    val haptics = LocalHapticFeedback.current
+    Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+        Row(Modifier.padding(horizontal = 22.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(14.dp))
+            Column {
+                Text(
+                    text = stringResource(R.string.recommendation_algorithm),
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onBackground,
+                )
+                Text(
+                    text = stringResource(R.string.recommendation_algorithm_subtitle),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outline)
+        RecommendationAlgorithm.entries.forEach { algorithm ->
+            val chosen = algorithm == selected
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onSelect(algorithm)
+                    }
+                    .padding(horizontal = 22.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = algorithm.label,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.weight(1f),
+                )
                 if (chosen) {
                     Spacer(Modifier.width(12.dp))
                     Icon(

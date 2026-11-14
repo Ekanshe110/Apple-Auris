@@ -288,6 +288,87 @@ object AudioCache {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
+    /** URI parameter carrying Apple's exact catalogue id beside the addon's stream id. */
+    internal const val APPLE_CATALOG_PARAMETER = "appleCatalogId"
+
+    /** URI parameter carrying the pre-Apple identity for provenance only. */
+    internal const val APPLE_ORIGINAL_PARAMETER = "originalVideoId"
+
+    /** Provider label recorded for Apple cache provenance. */
+    internal const val APPLE_PROVIDER = "Apple Music"
+
+    /**
+     * Cache key for an Apple recording.
+     *
+     * The Apple source and Apple's catalogue id, never the original YouTube or
+     * Spotify id. The latter names a row, not a recording: it can survive an
+     * enrichment that changes which Apple item the row means.
+     */
+    internal fun appleCacheKey(sourceId: String, appleCatalogId: String): String =
+        "apple|$sourceId|$appleCatalogId"
+
+    /**
+     * Provenance and expected shape of one Apple stream.
+     *
+     * Pure data so cache admission can be tested without Media3, Android or a
+     * network. [durationMs] and [byteLength] are the stream descriptor's claims;
+     * a missing claim means "not stated", not zero.
+     */
+    internal data class AppleStreamDescriptor(
+        val sourceId: String,
+        val appleCatalogId: String,
+        val originalVideoId: String,
+        val durationMs: Long = 0L,
+        val byteLength: Long = 0L,
+    )
+
+    /** Runtime agreement allowed between two duration statements. */
+    private const val APPLE_DURATION_TOLERANCE_MS = 2_000L
+
+    /**
+     * Whether cached Apple bytes may be served for [descriptor].
+     *
+     * Both stated dimensions must agree. Duration protects against an old,
+     * shorter recording; byte length protects against a different rendition or
+     * a truncated cache entry. An unstated descriptor dimension cannot reject
+     * an entry, but an entry with no duration is never admitted when Apple
+     * states one.
+     */
+    internal fun isAppleCacheUsable(
+        cachedDurationMs: Long,
+        cachedByteLength: Long,
+        descriptor: AppleStreamDescriptor,
+    ): Boolean {
+        if (descriptor.durationMs > 0L) {
+            if (cachedDurationMs <= 0L) return false
+            if (kotlin.math.abs(cachedDurationMs - descriptor.durationMs) > APPLE_DURATION_TOLERANCE_MS) {
+                return false
+            }
+        }
+        if (descriptor.byteLength > 0L) {
+            if (cachedByteLength <= 0L) return false
+            if (cachedByteLength != descriptor.byteLength) return false
+        }
+        return true
+    }
+
+    /** Whether an Apple cache key has completed its background validation. */
+    private enum class AppleValidationState { PENDING, VALID, REJECTED, FAILED }
+
+    /**
+     * Apple cache keys known to this process.
+     *
+     * Kept in memory so the playback data source can make one cheap decision
+     * without touching Media3's cache metadata on ExoPlayer's loader thread.
+     */
+    private val appleCacheKeys = ConcurrentHashMap.newKeySet<String>()
+
+    /** One validation result per Apple cache key; work is done once per track. */
+    private val appleValidationStates = ConcurrentHashMap<String, AppleValidationState>()
+
+    /** Old row identities already evicted for Apple mode. */
+    private val appleEvictedOriginals = ConcurrentHashMap.newKeySet<String>()
+
     /**
      * This object has no Context of its own, and the background data policy
      * needs system services. Set once from [init].
@@ -319,6 +400,13 @@ object AudioCache {
         val databaseProvider = StandaloneDatabaseProvider(context)
         migrateFromCacheDir(File(context.cacheDir, LEGACY_CACHE_DIR_NAME), dir, databaseProvider)
         cache = SimpleCache(dir, evictor, databaseProvider)
+        // Apple entries have their own key shape. Remember the ones already on
+        // disk so a later Apple open can validate them before serving them,
+        // without asking Media3 for metadata on ExoPlayer's loader thread.
+        appleCacheKeys.clear()
+        appleValidationStates.clear()
+        appleEvictedOriginals.clear()
+        cache.keys.filter { it.startsWith("apple|") }.forEach(appleCacheKeys::add)
         // Builds before album/explicit/video-aware and credit-aware matching
         // may have cached a completely different recording under a YouTube
         // track's `#alt` key.
@@ -457,6 +545,124 @@ object AudioCache {
             .onFailure { TrackLog.d(TAG, "rendition $key still in use: ${it.message}", about = mediaIdIn(uri)) }
     }
 
+    /** The Apple cache key named by [uri], or null when it is not an Apple request. */
+    private fun appleKeyOf(uri: Uri): String? {
+        if (uri.authority != "source") return null
+        val source = uri.getQueryParameter("s") ?: return null
+        val catalog = uri.getQueryParameter(APPLE_CATALOG_PARAMETER) ?: return null
+        if (!SourceRegistry.isAppleRole(source)) return null
+        return appleCacheKey(source, catalog)
+    }
+
+    /**
+     * Starts background validation of an existing Apple cache entry.
+     *
+     * Called when an Apple MediaItem is built, not when ExoPlayer opens it.
+     * The descriptor read therefore stays off the loader thread. A pending
+     * entry remains cache-eligible so a warm, valid replay neither resolves
+     * the Apple source twice nor regresses to a network request. A rejected
+     * entry is bypassed and evicted when its lock permits.
+     *
+     * No work is started for a key that is not already on disk. A new entry
+     * cannot be stale, and resolving its source twice would duplicate the
+     * network work the player is about to do anyway.
+     */
+    internal fun scheduleAppleValidation(uri: Uri) {
+        if (!AppSettings.appleRichModeEnabled || !::cache.isInitialized) return
+        // The old YouTube/Spotify identity is never selected by the new key,
+        // but it must not keep occupying the cache either. This eviction runs
+        // even when no Apple cache entry exists yet.
+        uri.getQueryParameter(APPLE_ORIGINAL_PARAMETER)?.takeIf(String::isNotBlank)?.let { original ->
+            if (appleEvictedOriginals.add(original)) {
+                scope.launch { evictOriginalIdentity(original) }
+            }
+        }
+        val family = appleKeyOf(uri) ?: return
+        val members = appleCacheKeys.filter { it == family || it.startsWith("$family#") }
+        if (members.isEmpty()) return
+        members.forEach { key -> scheduleAppleMemberValidation(uri, key) }
+    }
+
+    /** Starts or retries validation for one persisted member of an Apple cache family. */
+    private fun scheduleAppleMemberValidation(uri: Uri, key: String) {
+        while (true) {
+            val previous = appleValidationStates[key]
+            if (previous == AppleValidationState.VALID || previous == AppleValidationState.PENDING) return
+            // FAILED means metadata could not be read this time. It is not a
+            // verdict on the bytes, so a later open may try again.
+            if (previous == null || previous == AppleValidationState.FAILED) {
+                if (appleValidationStates.replace(key, previous, AppleValidationState.PENDING)) break
+                continue
+            }
+            return
+        }
+        scope.launch {
+            val sourceId = uri.getQueryParameter("s").orEmpty()
+            val catalogId = uri.getQueryParameter(APPLE_CATALOG_PARAMETER).orEmpty()
+            val originalVideoId = uri.getQueryParameter(APPLE_ORIGINAL_PARAMETER).orEmpty()
+            val metadata = runCatching { cache.getContentMetadata(key) }.getOrNull()
+            if (metadata == null) {
+                appleValidationStates[key] = AppleValidationState.FAILED
+                return@launch
+            }
+
+            // Validate the entry already on disk. Do not resolve the Apple
+            // source again: playback resolves it once, and asking the addon a
+            // second time duplicated work while the player waited. The cache
+            // key proves source + catalogue identity; the entry's own metadata
+            // proves which original row produced it and how large the response
+            // was.
+            val cachedDuration = metadata.get(META_DURATION_MS, null as String?)?.toLongOrNull() ?: 0L
+            val cachedLength = ContentMetadata.getContentLength(metadata).coerceAtLeast(0L)
+            val recordedLength = metadata.get(META_BYTE_LENGTH, null as String?)?.toLongOrNull() ?: 0L
+            val provenanceMatches =
+                metadata.get(META_SOURCE_ID, null as String?) == sourceId &&
+                    metadata.get(META_APPLE_CATALOG_ID, null as String?) == catalogId &&
+                    metadata.get(META_ORIGINAL_VIDEO_ID, null as String?) == originalVideoId &&
+                    metadata.get(META_PROVIDER, null as String?) == APPLE_PROVIDER
+            val descriptor = AppleStreamDescriptor(
+                sourceId = sourceId,
+                appleCatalogId = catalogId,
+                originalVideoId = originalVideoId,
+                durationMs = 0L,
+                byteLength = recordedLength,
+            )
+            if (!provenanceMatches ||
+                !isAppleCacheUsable(cachedDuration, cachedLength, descriptor)
+            ) {
+                val removed = runCatching { cache.removeResource(key) }.isSuccess
+                if (removed) appleCacheKeys.remove(key)
+                appleValidationStates[key] = AppleValidationState.REJECTED
+                TrackLog.d(
+                    TAG,
+                    "rejected stale Apple cache $key (${cachedDuration / 1000}s/$cachedLength bytes, " +
+                        "recorded $recordedLength bytes)",
+                    about = originalVideoId,
+                )
+                return@launch
+            }
+            appleValidationStates[key] = AppleValidationState.VALID
+        }
+    }
+
+    /**
+     * Removes cache entries named by the pre-Apple identity.
+     *
+     * Includes the exact id and its rendition siblings. The new Apple key is
+     * separate and is never touched by this pass.
+     */
+    private fun evictOriginalIdentity(originalVideoId: String) {
+        if (originalVideoId.isBlank()) return
+        val oldKeys = cache.keys.filter { key ->
+            key == originalVideoId || key.startsWith("$originalVideoId#")
+        }
+        oldKeys.forEach { key ->
+            runCatching { cache.removeResource(key) }
+                .onSuccess { TrackLog.d(TAG, "evicted pre-Apple cache identity $key", about = originalVideoId) }
+                .onFailure { TrackLog.d(TAG, "pre-Apple cache identity $key still in use: ${it.message}", about = originalVideoId) }
+        }
+    }
+
     /**
      * Throws away one named rendition of [uri] because its bytes cannot be
      * decoded, so the next attempt starts from a clean copy.
@@ -554,7 +760,17 @@ object AudioCache {
                 val source = uri.getQueryParameter("s")
                 val track = uri.getQueryParameter("t")
                 if (source != null && track != null) {
-                    val base = "$source|$track"
+                    // Apple playback keeps the addon's stream id in `t`, but its
+                    // cache identity is Apple's catalogue id in `c`. The original
+                    // YouTube/Spotify id is provenance only and must never name
+                    // the entry: it can point at a different recording after an
+                    // Apple enrichment changes.
+                    val appleCatalogId = uri.getQueryParameter(APPLE_CATALOG_PARAMETER)
+                    val base = if (appleCatalogId != null && SourceRegistry.isAppleRole(source)) {
+                        appleCacheKey(source, appleCatalogId)
+                    } else {
+                        "$source|$track"
+                    }
                     QualityUpgrade.cacheTag(uri)?.let { "$base#$it" } ?: base
                 } else {
                     null
@@ -607,7 +823,7 @@ object AudioCache {
      * while the track plays from JioSaavn or an addon, and not for read-ahead
      * of a track the queue never reached.
      */
-    enum class Origin { YOUTUBE, JIOSAAVN, OTHER }
+    enum class Origin { YOUTUBE, JIOSAAVN, APPLE, OTHER }
 
     /** One track in the Cached songs folder. */
     data class CachedSong(
@@ -617,6 +833,18 @@ object AudioCache {
         val bytes: Long,
         /** When any of those bytes were last read or written, epoch millis. */
         val lastUsedMs: Long,
+        /** Provider that served the recording, e.g. Apple Music. */
+        val provider: String? = null,
+        /** Provider's exact source/config id. */
+        val sourceId: String? = null,
+        /** Identity the row had before Apple enrichment. */
+        val originalVideoId: String? = null,
+        /** Apple's exact catalogue id. */
+        val appleCatalogId: String? = null,
+        /** Stream duration in milliseconds, when known. */
+        val durationMs: Long? = null,
+        /** Stream byte length, when known. */
+        val byteLength: Long? = null,
     )
 
     private val _contentsChanged = MutableStateFlow(0)
@@ -724,8 +952,10 @@ object AudioCache {
         if (spec.uri.scheme != "bitchord") return
         val mediaId = mediaIdIn(spec.uri) ?: return
         val key = spec.key ?: keyFactory.buildCacheKey(spec)
+        if (appleKeyOf(spec.uri) != null) appleCacheKeys.add(key)
         val origin = originOf(spec.uri, mediaId, servedUrl)
-        val song = notedSongs[mediaId]
+        val originalVideoId = spec.uri.getQueryParameter(APPLE_ORIGINAL_PARAMETER) ?: mediaId
+        val song = notedSongs[originalVideoId] ?: notedSongs[mediaId]
         // Automix's analysis-only read: its own YouTube Opus download, made
         // whatever the track is actually playing from. Never playback.
         val analysis = AutomixAnalysisSource.requestsYouTubeOpus(
@@ -734,13 +964,16 @@ object AudioCache {
         runCatching {
             val meta = cache.getContentMetadata(key)
             fun has(name: String) = meta.get(name, null as String?) != null
+            val contentLength = ContentMetadata.getContentLength(meta).coerceAtLeast(0L)
             val usedByPlayback = has(META_PLAYBACK) || !analysis
-            val played = has(META_PLAYED) || (!analysis && mediaId in playedIds)
+            val played = has(META_PLAYED) ||
+                (!analysis && (mediaId in playedIds || originalVideoId in playedIds))
             val tagged = meta.get(META_ORIGIN, null as String?) == origin.name &&
                 meta.get(META_MEDIA_ID, null as String?) == mediaId &&
                 has(META_PLAYBACK) == usedByPlayback &&
                 (usedByPlayback || has(META_ANALYSIS)) &&
-                has(META_PLAYED) == played
+                has(META_PLAYED) == played &&
+                (contentLength <= 0L || has(META_BYTE_LENGTH))
             // Every re-open — a seek, a continuation fetch — passes through
             // here. Only write when something would actually change.
             if (tagged && (song == null || has(META_TITLE))) return
@@ -749,6 +982,25 @@ object AudioCache {
                 ContentMetadataMutations().also { mutations ->
                     mutations.set(META_ORIGIN, origin.name)
                     mutations.set(META_MEDIA_ID, mediaId)
+                    spec.uri.getQueryParameter("s")?.let { sourceId ->
+                        mutations.set(META_SOURCE_ID, sourceId)
+                        val provider = if (SourceRegistry.isAppleRole(sourceId)) {
+                            "Apple Music"
+                        } else {
+                            SourceRegistry.config(sourceId)?.displayName
+                        }
+                        provider?.let { mutations.set(META_PROVIDER, it) }
+                    }
+                    mutations.set(META_ORIGINAL_VIDEO_ID, originalVideoId)
+                    spec.uri.getQueryParameter(APPLE_CATALOG_PARAMETER)
+                        ?.let { mutations.set(META_APPLE_CATALOG_ID, it) }
+                    spec.uri.getQueryParameter("d")?.toLongOrNull()?.times(1_000L)
+                        ?.let { mutations.set(META_DURATION_MS, it.toString()) }
+                    spec.uri.getQueryParameter("r")
+                        ?.let { mutations.set(META_CONTENT_RATING, it) }
+                    spec.uri.getQueryParameter("isrc")
+                        ?.let { mutations.set(META_ISRC, it) }
+                    if (contentLength > 0L) mutations.set(META_BYTE_LENGTH, contentLength.toString())
                     if (usedByPlayback) mutations.set(META_PLAYBACK, "1") else mutations.set(META_ANALYSIS, "1")
                     if (played) mutations.set(META_PLAYED, "1")
                     describe(mutations, song, spec.uri)
@@ -770,15 +1022,19 @@ object AudioCache {
      * serving the track. Anything not positively one of the two is [Origin.OTHER].
      */
     private fun originOf(uri: Uri, mediaId: String, servedUrl: String): Origin {
-        val host = runCatching { Uri.parse(servedUrl).host }.getOrNull()?.lowercase(Locale.ROOT).orEmpty()
-        if (host.endsWith("googlevideo.com") || host.endsWith("youtube.com")) return Origin.YOUTUBE
-        if (host.endsWith("saavncdn.com") || host.endsWith("jiosaavn.com")) return Origin.JIOSAAVN
         val upgrade = QualityUpgrade.forcedStream(uri)
         val configId = when {
             upgrade != null -> upgrade.sourceConfigId
             uri.getQueryParameter("s") != null -> uri.getQueryParameter("s")
             else -> StreamChoice.of(mediaId)?.sourceConfigId
         }
+        // The requested source is stronger evidence than the CDN hostname: an
+        // Apple addon may front its stream with a host shared by another
+        // provider.
+        if (configId != null && SourceRegistry.isAppleRole(configId)) return Origin.APPLE
+        val host = runCatching { Uri.parse(servedUrl).host }.getOrNull()?.lowercase(Locale.ROOT).orEmpty()
+        if (host.endsWith("googlevideo.com") || host.endsWith("youtube.com")) return Origin.YOUTUBE
+        if (host.endsWith("saavncdn.com") || host.endsWith("jiosaavn.com")) return Origin.JIOSAAVN
         val kind = configId?.let { SourceRegistry.config(it)?.kind }
         return if (kind == SourceKind.JIOSAAVN) Origin.JIOSAAVN else Origin.OTHER
     }
@@ -794,6 +1050,8 @@ object AudioCache {
         artist?.takeIf { it.isNotBlank() }?.let { mutations.set(META_ARTIST, it) }
         album?.takeIf { it.isNotBlank() }?.let { mutations.set(META_ALBUM, it) }
         duration?.takeIf { it.isNotBlank() }?.let { mutations.set(META_DURATION, it) }
+        song?.contentRating?.takeIf { it.isNotBlank() }?.let { mutations.set(META_CONTENT_RATING, it) }
+        song?.isrc?.takeIf { it.isNotBlank() }?.let { mutations.set(META_ISRC, it) }
         song?.thumbnailUrl?.takeIf { it.isNotBlank() }?.let { mutations.set(META_ART, it) }
     }
 
@@ -819,30 +1077,43 @@ object AudioCache {
             if (origin == Origin.OTHER) continue
             if (meta.get(META_PLAYED, null as String?) == null) continue
             val mediaId = meta.get(META_MEDIA_ID, null as String?) ?: continue
+            val originalVideoId = meta.get(META_ORIGINAL_VIDEO_ID, null as String?) ?: mediaId
             val spans = cache.getCachedSpans(key).filter { it.isCached && it.file?.exists() == true }
             val bytes = spans.sumOf { it.length }
             if (bytes <= 0L) continue
             val touched = spans.maxOf { it.lastTouchTimestamp }
-            byTrack.getOrPut(mediaId) { mutableListOf() } += Entry(origin, meta, bytes, touched)
+            byTrack.getOrPut(originalVideoId) { mutableListOf() } += Entry(origin, meta, bytes, touched)
         }
-        byTrack.map { (mediaId, entries) ->
+        byTrack.map { (originalVideoId, entries) ->
             fun field(name: String): String? =
                 entries.firstNotNullOfOrNull { it.meta.get(name, null as String?)?.takeIf(String::isNotBlank) }
             val bytes = entries.sumOf { it.bytes }
             val lastUsed = entries.maxOf { it.touched }
             val origin = entries.maxBy { it.bytes }.origin
-            val noted = notedSongs[mediaId]
+            val noted = notedSongs[originalVideoId]
             val art = field(META_ART) ?: noted?.thumbnailUrl
-                ?: mediaId.takeIf { SourceRegistry.parseTrackKey(it) == null }
+                ?: originalVideoId.takeIf { SourceRegistry.parseTrackKey(it) == null }
                     ?.let { "https://i.ytimg.com/vi/$it/hqdefault.jpg" }
+            val sourceId = field(META_SOURCE_ID)
+            val appleCatalogId = field(META_APPLE_CATALOG_ID)
+            val durationMs = field(META_DURATION_MS)?.toLongOrNull()
+            val byteLength = entries.maxOf {
+                ContentMetadata.getContentLength(it.meta).coerceAtLeast(0L)
+            }.takeIf { it > 0L }
             CachedSong(
                 song = Song(
-                    videoId = mediaId,
-                    title = field(META_TITLE) ?: noted?.title?.takeIf(String::isNotBlank) ?: mediaId,
+                    videoId = originalVideoId,
+                    title = field(META_TITLE) ?: noted?.title?.takeIf(String::isNotBlank) ?: originalVideoId,
                     artist = field(META_ARTIST) ?: noted?.artist.orEmpty(),
                     thumbnailUrl = art,
                     durationText = field(META_DURATION) ?: noted?.durationText,
                     albumName = field(META_ALBUM) ?: noted?.albumName,
+                    appleCatalogId = appleCatalogId,
+                    isExplicit = noted?.isExplicit,
+                    contentRating = field(META_CONTENT_RATING) ?: noted?.contentRating,
+                    isrc = field(META_ISRC) ?: noted?.isrc,
+                    playbackSource = field(META_PROVIDER),
+                    playbackSourceId = sourceId,
                     // The row's second line: where the copy came from and
                     // what it costs on disk.
                     downloadFormat = "${origin.label} · ${formatBytes(bytes)}",
@@ -851,6 +1122,12 @@ object AudioCache {
                 origin = origin,
                 bytes = bytes,
                 lastUsedMs = lastUsed,
+                provider = field(META_PROVIDER) ?: if (origin == Origin.APPLE) "Apple Music" else origin.label,
+                sourceId = sourceId,
+                originalVideoId = originalVideoId,
+                appleCatalogId = appleCatalogId,
+                durationMs = durationMs,
+                byteLength = byteLength,
             )
         }.sortedByDescending { it.lastUsedMs }
     }
@@ -903,6 +1180,7 @@ object AudioCache {
         get() = when (this) {
             Origin.YOUTUBE -> SourceKind.YOUTUBE.label
             Origin.JIOSAAVN -> SourceKind.JIOSAAVN.label
+            Origin.APPLE -> "Apple Music"
             Origin.OTHER -> "Addon"
         }
 
@@ -913,6 +1191,14 @@ object AudioCache {
 
     private const val META_ORIGIN = "bc_origin"
     private const val META_MEDIA_ID = "bc_media_id"
+    private const val META_SOURCE_ID = "bc_source_id"
+    private const val META_PROVIDER = "bc_provider"
+    private const val META_ORIGINAL_VIDEO_ID = "bc_original_video_id"
+    private const val META_APPLE_CATALOG_ID = "bc_apple_catalog_id"
+    private const val META_DURATION_MS = "bc_duration_ms"
+    private const val META_BYTE_LENGTH = "bc_byte_length"
+    private const val META_CONTENT_RATING = "bc_content_rating"
+    private const val META_ISRC = "bc_isrc"
     private const val META_TITLE = "bc_title"
     private const val META_ARTIST = "bc_artist"
     private const val META_ALBUM = "bc_album"
@@ -978,7 +1264,19 @@ object AudioCache {
 
             override fun open(dataSpec: DataSpec): Long {
                 val scheme = dataSpec.uri.scheme
-                activeDs = if (scheme == "file" || scheme == "content") {
+                val appleFamily = appleKeyOf(dataSpec.uri)
+                val appleKey = appleFamily?.let { keyFactory.buildCacheKey(dataSpec) }
+                val appleState = appleKey?.let(appleValidationStates::get)
+                // A cheap in-memory state check only. The descriptor comparison
+                // and eviction happen in AudioCache's IO scope. A pending or
+                // failed metadata read must not turn a warm cache entry back
+                // into a network request: that duplicated source resolution and
+                // made the first replay slower than the miss it replaced. Only
+                // an entry already known to be bad bypasses the cache.
+                val bypassUnvalidatedApple = appleKey != null &&
+                    appleKey in appleCacheKeys &&
+                    appleState == AppleValidationState.REJECTED
+                activeDs = if (scheme == "file" || scheme == "content" || bypassUnvalidatedApple) {
                     upstreamDs
                 } else {
                     cacheDs
@@ -1148,7 +1446,14 @@ object AudioCache {
                 val directApple = AppSettings.appleRichModeEnabled &&
                     appleSourceId != null &&
                     SourceRegistry.isAppleStrictRouting(appleSourceId)
-                if (SourceRegistry.parseTrackKey(next) != null || directApple) {
+                val strictAppleDiscovery = AppSettings.appleRichModeEnabled &&
+                    SourceRegistry.parseTrackKey(next) == null
+                if (SourceRegistry.parseTrackKey(next) != null || directApple || strictAppleDiscovery) {
+                    // Strict Apple discovery rows never enter the generic
+                    // preparation path below. If their source URI is absent,
+                    // leave the row for the player rather than substituting a
+                    // name-matched recording.
+                    if (head.uri == null) return@launch
                     // The opening goes now, not after the settle delay: it is
                     // what the analysis of the incoming track reads, and it is
                     // what the hand-over starts from. The settle delay is about

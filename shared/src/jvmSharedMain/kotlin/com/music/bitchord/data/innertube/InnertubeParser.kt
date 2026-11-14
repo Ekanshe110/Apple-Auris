@@ -1470,6 +1470,7 @@ object InnertubeParser {
             thumbnailUrl = thumbnails.best(),
             videoId = videoId,
             browseId = resolvedBrowseId,
+            isExplicit = renderer.hasExplicitBadge(),
         )
     }
 

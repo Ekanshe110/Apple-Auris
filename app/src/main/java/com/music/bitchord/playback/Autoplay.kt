@@ -1,11 +1,14 @@
 package com.music.bitchord.playback
 
 import com.music.bitchord.data.YtMusicRepository
+import com.music.bitchord.data.apple.AppleEnrichment
+import com.music.bitchord.data.apple.AppleHomeSource
 import com.music.bitchord.data.listentogether.ListenTogether
 import com.music.bitchord.data.model.SearchFilter
 import com.music.bitchord.data.model.SearchResult
 import com.music.bitchord.data.model.QueueTier
 import com.music.bitchord.data.model.Song
+import com.music.bitchord.data.settings.RecommendationAlgorithm
 import com.music.bitchord.data.sources.SourceRegistry
 import com.music.bitchord.data.sources.TrackMatcher
 import com.music.bitchord.playback.QueueCoordinator.asQueueEntry
@@ -102,43 +105,60 @@ suspend fun loadAutoplayTracks(
     limit: Int = MAX_QUEUED_AUTOPLAY,
     station: Boolean = false,
 ): Result<List<Song>> {
-    // The provider decides who is asked what comes next, for the same reason it
-    // decides Flow's seeds: AutoPlay is a recommendation. The seed song is
-    // unchanged — a Spotify-provider session still continues from the song that
-    // is playing — and the queue-entry mapping below is shared, so a Spotify
-    // batch lands in the queue looking exactly like a YouTube one.
-    if (com.music.bitchord.data.settings.AppSettings.homeProvider.value ==
-        com.music.bitchord.data.settings.HomeProvider.SPOTIFY
-    ) {
-        val fromSpotify = runCatching {
+    // The recommendation algorithm decides who is asked what comes next. The
+    // seed song is unchanged, and the queue-entry mapping below is shared, so
+    // every algorithm's batch lands in the queue in the same shape.
+    val algorithm = com.music.bitchord.data.settings.AppSettings.recommendationAlgorithm.value
+    val excluded = existing.mapTo(HashSet()) { it.videoId }
+    val spotifyCandidates = if (algorithm.includes(RecommendationAlgorithm.SPOTIFY)) {
+        runCatching {
             com.music.bitchord.data.spotify.SpotifyHomeSource.autoplayTracks(
-                exclude = existing.mapTo(HashSet()) { it.videoId },
+                exclude = excluded,
                 limit = limit,
                 seed = seedSong,
                 station = station,
             )
         }.getOrDefault(emptyList())
-        if (fromSpotify.isNotEmpty()) {
-            return Result.success(fromSpotify.map {
-                it.copy(
-                    radioName = seedSong.radioName,
-                    playbackSource = seedSong.playbackSource,
-                    playbackSourceType = seedSong.playbackSourceType,
-                    playbackSourceId = seedSong.playbackSourceId,
-                ).asQueueEntry(QueueTier.AUTOPLAY)
-            })
-        }
-        // No fallback to YouTube's radio here either: on a Spotify session its
-        // pool is the only algorithm this app may follow, and a queue filled
-        // from the other provider is the same silent substitution Flow was
-        // doing. Nothing appended is the honest answer. See SpotifyHomeSource.
-        return Result.success(emptyList())
+    } else {
+        emptyList()
     }
-    val seed = youtubeSeedFor(seedSong) ?: return Result.success(emptyList())
-    val related = YtMusicRepository.radio(seed).getOrElse { return Result.failure(it) }
-    val extra = QueueBuilder.extend(existing, related, limit)
+    val youtubeCandidates = if (algorithm.includes(RecommendationAlgorithm.YOUTUBE)) {
+        youtubeSeedFor(seedSong)?.let { seed ->
+            runCatching { YtMusicRepository.radio(seed).getOrNull().orEmpty() }
+                .getOrDefault(emptyList())
+        }.orEmpty()
+    } else {
+        emptyList()
+    }
+    val appleCandidates = if (algorithm.includes(RecommendationAlgorithm.APPLE)) {
+        AppleHomeSource.tracks(limit).getOrNull().orEmpty()
+    } else {
+        emptyList()
+    }
+
+    // All mode takes turns between the three feeds. Concatenating them would
+    // let the first full feed consume the whole limit and leave the other two
+    // algorithms with no representation at all.
+    val candidateGroups = listOf(spotifyCandidates, youtubeCandidates, appleCandidates)
+    val candidates = buildList {
+        var index = 0
+        while (size < limit && candidateGroups.any { it.size > index }) {
+            candidateGroups.forEach { group -> group.getOrNull(index)?.let(::add) }
+            index++
+        }
+    }
+
+    var extra = QueueBuilder.extend(existing, candidates.distinctBy { it.videoId }, limit)
         .filterNot(com.music.bitchord.data.settings.AppSettings::isSongBlocked)
     if (extra.isEmpty()) return Result.success(emptyList())
+
+    // Apple mode keeps Apple as the audio backend. Rows without an exact
+    // Apple identity are dropped rather than silently falling through to a
+    // generic catalogue.
+    if (com.music.bitchord.data.settings.AppSettings.appleRichModeEnabled) {
+        extra = AppleEnrichment.enrich(extra)
+            .filter { !it.appleCatalogId.isNullOrBlank() }
+    }
 
     return Result.success(extra.map {
         it.copy(

@@ -109,16 +109,24 @@ object LyricsRepository {
         appleSongId: String? = null,
         /** True when this is an Apple row, even if its catalogue id is absent. */
         strictApple: Boolean = false,
+        /** Explicit recording: a censored document is refused, never repaired. */
+        isExplicit: Boolean = false,
     ): Result? = coroutineScope {
         val directAppleSongId = appleSongId?.trim()?.takeIf { it.isNotEmpty() }
-        // An Apple row already names the recording. Ask only the direct
-        // Apple-id route: a title/artist or ISRC lookup would be a duplicate
-        // lookup that can attach words to the wrong recording. An Apple row
-        // with no catalogue id cannot be looked up at all; guessing by name
-        // would break the same identity rule.
+        val knownIsrc = isrc?.trim()?.takeIf { it.isNotEmpty() }
+        // An Apple row already names the recording. Only exact-recording
+        // routes are allowed: an ISRC-backed Apple TTML document first, then
+        // the exact Apple song id. No title/artist search can run here, because
+        // it can attach a clean sibling's words to an explicit master.
+        val appleSequence = buildList {
+            if (knownIsrc != null) {
+                add(LyricsSource.LRC_RED)
+                add(LyricsSource.BINI_LYRICS)
+            }
+            if (directAppleSongId != null) add(LyricsSource.PAXSENIX)
+        }.distinct().filter { it in sources && !it.hidden }
         val sequence = when {
-            directAppleSongId != null -> listOf(LyricsSource.PAXSENIX)
-            strictApple -> emptyList()
+            strictApple || directAppleSongId != null -> appleSequence
             else -> (order + LyricsSource.offered)
                 .distinct()
                 .filter { it in sources && !it.hidden }
@@ -133,7 +141,7 @@ object LyricsRepository {
         // Settled before anyone is asked for words, so every source that can
         // name the recording does. What the caller knows beats what we worked
         // out last time, and both beat asking again.
-        val known = isrc?.takeIf { it.isNotBlank() } ?: isrcs[videoId]
+        val known = knownIsrc ?: isrcs[videoId]
         val hit = if (known == null && directAppleSongId == null && !strictApple) {
             identify(videoId, searchTitle, searchArtist, durationMs, album, sequence)
         } else {
@@ -160,6 +168,8 @@ object LyricsRepository {
                         hit,
                         documents::get,
                         appleSongId,
+                        isExplicit,
+                        strictApple,
                     )?.let { result(source, it) }
                     onSourceResult?.invoke(source, found)
                     found
@@ -208,9 +218,18 @@ object LyricsRepository {
         /** Fetches a document once per lookup, however many sources want it. */
         get: suspend (String) -> String?,
         appleSongId: String?,
+        isExplicit: Boolean,
+        strictApple: Boolean,
     ): List<LyricLine>? {
         val found = when (source) {
-            LyricsSource.LRC_RED -> LrcRed.lyrics(title, artist, durationMs, isrc, get)
+            LyricsSource.LRC_RED -> LrcRed.lyrics(
+                title = title,
+                artist = artist,
+                durationMs = durationMs,
+                isrc = isrc,
+                get = get,
+                allowSearch = !strictApple,
+            )
             LyricsSource.BETTER_LYRICS -> BetterLyrics.lyrics(title, artist, durationMs, album)
             LyricsSource.BETTER_LYRICS_PORTATO -> BetterLyrics.portato(title, artist, durationMs, album)
             LyricsSource.LYRICS_PLUS -> LyricsPlus.lyrics(title, artist, durationMs, album, isrc)
@@ -241,8 +260,20 @@ object LyricsRepository {
             LyricsSource.GENIUS -> Genius.lyrics(title, artist)
             LyricsSource.EXTENSION -> extensionProvider?.lyrics(title, artist, album, durationMs)
         }
+        // A censored document is not an uncensored one with a few characters
+        // missing. In an explicit recording, refuse the answer rather than
+        // displaying asterisks, replacing them, or silently trying the clean
+        // sibling. The raw Apple document either has the words or this track
+        // has no safe lyrics.
+        if (isExplicit && found?.any { line -> line.containsCensorshipMarker() } == true) {
+            return null
+        }
         return found
     }
+
+    /** Whether one lyric line carries the usual censorship marker. */
+    private fun LyricLine.containsCensorshipMarker(): Boolean =
+        '*' in text || words.any { '*' in it.text }
 
     /**
      * PaxSenix uses a known Apple song id when one is available and otherwise

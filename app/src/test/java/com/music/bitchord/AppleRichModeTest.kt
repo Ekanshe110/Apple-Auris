@@ -13,6 +13,9 @@ import com.music.bitchord.data.sources.SourceCatalogRole
 import com.music.bitchord.data.sources.SourceConfig
 import com.music.bitchord.data.sources.SourceKind
 import com.music.bitchord.data.sources.SourceRegistry
+import com.music.bitchord.data.sources.addon.AddonLibraryCapability
+import com.music.bitchord.data.sources.addon.AddonManifest
+import com.music.bitchord.data.sources.catalogRoleFromManifest
 import com.music.bitchord.playback.requiresStrictAppleIdentity
 import com.music.bitchord.playback.strictAppleWatchUri
 import org.junit.Assert.assertEquals
@@ -31,6 +34,9 @@ class AppleRichModeTest {
         duration: String? = "4:00",
         appleId: String? = null,
         lookupError: String? = null,
+        isExplicit: Boolean? = null,
+        contentRating: String? = null,
+        isrc: String? = null,
     ) = Song(
         videoId = id,
         title = title,
@@ -39,10 +45,13 @@ class AppleRichModeTest {
         durationText = duration,
         appleCatalogId = appleId,
         appleLookupError = lookupError,
+        isExplicit = isExplicit,
+        contentRating = contentRating,
+        isrc = isrc,
     )
 
     @Test
-    fun `exact Apple identity ignores punctuation and case`() {
+    fun `Apple identity ignores punctuation and case`() {
         val wanted = song()
         val candidate = song(
             id = "src:apple::123",
@@ -56,7 +65,7 @@ class AppleRichModeTest {
     }
 
     @Test
-    fun `near artist is not an exact Apple identity`() {
+    fun `near artist is not an Apple identity`() {
         val wanted = song()
         val candidate = song(
             id = "src:apple::123",
@@ -69,14 +78,238 @@ class AppleRichModeTest {
     }
 
     @Test
-    fun `ambiguous Apple rows are rejected rather than guessed`() {
+    fun `title only Apple row is rejected`() {
+        val wanted = song()
+        val candidate = song(
+            id = "src:apple::123",
+            title = wanted.title,
+            artist = "Someone Else",
+            appleId = "123",
+        )
+
+        assertNull(AppleEnrichment.exactAppleId(wanted, listOf(candidate)))
+    }
+
+    @Test
+    fun `duplicate Apple editions choose the stable id`() {
         val wanted = song()
         val candidates = listOf(
-            song(id = "src:apple::123", appleId = "123"),
             song(id = "src:apple::456", appleId = "456"),
+            song(id = "src:apple::123", appleId = "123"),
+        )
+
+        assertEquals("123", AppleEnrichment.exactAppleId(wanted, candidates))
+    }
+
+    @Test
+    fun `different durations outside tolerance are rejected`() {
+        val wanted = song(duration = "4:00")
+        val candidates = listOf(
+            song(id = "src:apple::123", duration = "3:30", appleId = "123"),
+            song(id = "src:apple::456", duration = "5:00", appleId = "456"),
         )
 
         assertNull(AppleEnrichment.exactAppleId(wanted, candidates))
+    }
+
+    @Test
+    fun `Saiyaara artist overlap accepts either Apple edition`() {
+        val wanted = song(
+            title = "Saiyaara Reprise - Female",
+            artist = "Shreya Ghoshal, Irshad Kamil",
+            duration = "3:03",
+        )
+        val artist = "Tanishk Bagchi, Faheem Abdullah, Arslan Nizami, Shreya Ghoshal, Irshad Kamil"
+        val first = song(
+            id = "src:apple::1824400214",
+            title = wanted.title,
+            artist = artist,
+            duration = "3:03",
+            appleId = "1824400214",
+        )
+        val second = song(
+            id = "src:apple::1838877945",
+            title = wanted.title,
+            artist = artist,
+            duration = "3:03",
+            appleId = "1838877945",
+        )
+
+        assertEquals("1824400214", AppleEnrichment.exactAppleId(wanted, listOf(first)))
+        assertEquals("1838877945", AppleEnrichment.exactAppleId(wanted, listOf(second)))
+        assertEquals("1824400214", AppleEnrichment.exactAppleId(wanted, listOf(second, first)))
+    }
+
+    @Test
+    fun `Makhna matches Apple after title packaging is removed`() {
+        val wanted = song(
+            title = "Makhna",
+            artist = "Tanishk Bagchi, Yasser Desai, Asees Kaur",
+            duration = "3:03",
+        )
+        val candidate = song(
+            id = "src:apple::1529555769",
+            title = "Makhna (From \"Drive\")",
+            artist = "Tanishk Bagchi, Yasser Desai & Asees Kaur",
+            duration = "3:03",
+            appleId = "1529555769",
+        )
+
+        assertEquals("1529555769", AppleEnrichment.exactAppleId(wanted, listOf(candidate)))
+    }
+
+    @Test
+    fun `Ud-daa Punjab matches Apple despite dash spacing and Topic artist`() {
+        val wanted = song(
+            title = "Ud-daa Punjab",
+            artist = "Vishal Dadlani - Topic",
+            duration = "4:35",
+        )
+        val candidate = song(
+            id = "src:apple::1529447366",
+            title = "Ud - Daa Punjab",
+            artist = "Vishal Dadlani & Amit Trivedi",
+            duration = "4:34",
+            appleId = "1529447366",
+        )
+
+        assertEquals("1529447366", AppleEnrichment.exactAppleId(wanted, listOf(candidate)))
+    }
+
+    @Test
+    fun `unknown candidate duration is rejected when wanted duration is known`() {
+        val wanted = song(duration = "4:00")
+        val candidate = song(
+            id = "src:apple::123",
+            duration = null,
+            appleId = "123",
+        )
+
+        assertNull(AppleEnrichment.exactAppleId(wanted, listOf(candidate)))
+    }
+
+    @Test
+    fun `fuller artist overlap wins before title or id`() {
+        val wanted = song(
+            title = "Saiyaara Reprise - Female",
+            artist = "Shreya Ghoshal, Irshad Kamil",
+            duration = "3:03",
+        )
+        val full = song(
+            id = "src:apple::999",
+            title = wanted.title,
+            artist = "Shreya Ghoshal, Irshad Kamil, Tanishk Bagchi",
+            duration = "3:03",
+            appleId = "999",
+        )
+        val partial = song(
+            id = "src:apple::111",
+            title = wanted.title,
+            artist = "Shreya Ghoshal, Irshad Kumar",
+            duration = "3:03",
+            appleId = "111",
+        )
+
+        assertEquals("999", AppleEnrichment.exactAppleId(wanted, listOf(partial, full)))
+    }
+
+    @Test
+    fun `exact title spelling wins before Apple id`() {
+        val wanted = song(title = "Makhna", artist = "Asees Kaur", duration = "3:03")
+        val exact = song(
+            id = "src:apple::999",
+            title = "Makhna",
+            artist = wanted.artist,
+            duration = "3:03",
+            appleId = "999",
+        )
+        val packaged = song(
+            id = "src:apple::111",
+            title = "Makhna (From \"Drive\")",
+            artist = wanted.artist,
+            duration = "3:03",
+            appleId = "111",
+        )
+
+        assertEquals("999", AppleEnrichment.exactAppleId(wanted, listOf(packaged, exact)))
+    }
+
+    @Test
+    fun `explicit request selects the explicit master over a clean edition`() {
+        val wanted = song(isExplicit = true, contentRating = "explicit")
+        val clean = song(
+            id = "src:apple::clean",
+            appleId = "clean",
+            isExplicit = false,
+            contentRating = "clean",
+        )
+        val explicit = song(
+            id = "src:apple::explicit",
+            appleId = "explicit",
+            isExplicit = true,
+            contentRating = "explicit",
+        )
+
+        assertEquals("explicit", AppleEnrichment.exactAppleId(wanted, listOf(clean, explicit)))
+    }
+
+    @Test
+    fun `explicit request never substitutes a clean master`() {
+        val wanted = song(isExplicit = true, contentRating = "explicit")
+        val clean = song(
+            id = "src:apple::clean",
+            appleId = "clean",
+            isExplicit = false,
+            contentRating = "clean",
+        )
+
+        assertNull(AppleEnrichment.exactAppleId(wanted, listOf(clean)))
+    }
+
+    @Test
+    fun `remix and live editions do not match the plain recording`() {
+        val wanted = song(title = "Test Song", artist = "Test Artist")
+        val remix = song(
+            id = "src:apple::remix",
+            title = "Test Song (Remix)",
+            appleId = "remix",
+        )
+        val live = song(
+            id = "src:apple::live",
+            title = "Test Song (Live)",
+            appleId = "live",
+        )
+
+        assertNull(AppleEnrichment.exactAppleId(wanted, listOf(remix, live)))
+    }
+
+    @Test
+    fun `exact Apple match carries explicit rating and ISRC`() {
+        val wanted = song(isExplicit = true, contentRating = "explicit")
+        val candidate = song(
+            id = "src:apple::123",
+            appleId = "123",
+            isExplicit = true,
+            contentRating = "explicit",
+            isrc = "GBMA22047592",
+        )
+
+        val match = AppleEnrichment.exactAppleMatch(wanted, listOf(candidate))
+        assertEquals("123", match?.id)
+        assertEquals(true, match?.isExplicit)
+        assertEquals("explicit", match?.contentRating)
+        assertEquals("GBMA22047592", match?.isrc)
+    }
+
+    @Test
+    fun `transient lookup failure remains retryable`() {
+        assertFalse(
+            AppleEnrichment.shouldCacheLookup(
+                Result.failure<String?>(IllegalStateException("offline")),
+            ),
+        )
+        assertTrue(AppleEnrichment.shouldCacheLookup(Result.success(null)))
+        assertTrue(AppleEnrichment.shouldCacheLookup(Result.success("123")))
     }
 
     @Test
@@ -118,6 +351,43 @@ class AppleRichModeTest {
                 storedProvider = HomeProvider.SPOTIFY.name,
                 legacyAppleEnabled = true,
             ),
+        )
+    }
+
+    @Test
+    fun `manifest without catalogue provider preserves Apple role`() {
+        val manifest = AddonManifest()
+
+        assertEquals(
+            SourceCatalogRole.APPLE_MUSIC,
+            catalogRoleFromManifest(manifest, SourceCatalogRole.APPLE_MUSIC),
+        )
+    }
+
+    @Test
+    fun `explicit non-Apple catalogue provider becomes generic`() {
+        val manifest = AddonManifest(catalogueProvider = "spotify")
+
+        assertEquals(
+            SourceCatalogRole.GENERIC,
+            catalogRoleFromManifest(manifest, SourceCatalogRole.APPLE_MUSIC),
+        )
+    }
+
+    @Test
+    fun `catalogue identity does not depend on optional library`() {
+        val appleWithoutLibrary = AddonManifest(catalogueProvider = "apple-music")
+        val appleLibraryOnly = AddonManifest(
+            library = AddonLibraryCapability(provider = "apple-music"),
+        )
+
+        assertEquals(
+            SourceCatalogRole.APPLE_MUSIC,
+            catalogRoleFromManifest(appleWithoutLibrary, SourceCatalogRole.GENERIC),
+        )
+        assertEquals(
+            SourceCatalogRole.GENERIC,
+            catalogRoleFromManifest(appleLibraryOnly, SourceCatalogRole.GENERIC),
         )
     }
 

@@ -148,6 +148,7 @@ fun encodeLikedRows(songs: List<Song>): String =
             // and the download badge could not be shown.
             s.localUri.orEmpty(), s.downloadFormat.orEmpty(),
             s.appleCatalogId.orEmpty(), s.appleLookupError.orEmpty(),
+            s.contentRating.orEmpty(), s.isrc.orEmpty(),
         ).joinToString("\u001f") { it.replace("\u001e", " ").replace("\u001f", " ") }
     }
 
@@ -172,6 +173,8 @@ fun decodeLikedRows(text: String): List<Song> {
             downloadFormat = f.getOrNull(8)?.takeIf { it.isNotBlank() },
             appleCatalogId = f.getOrNull(9)?.takeIf { it.isNotBlank() },
             appleLookupError = f.getOrNull(10)?.takeIf { it.isNotBlank() },
+            contentRating = f.getOrNull(11)?.takeIf { it.isNotBlank() },
+            isrc = f.getOrNull(12)?.takeIf { it.isNotBlank() },
         )
     }
 }

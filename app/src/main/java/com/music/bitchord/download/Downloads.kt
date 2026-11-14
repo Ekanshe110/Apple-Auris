@@ -45,6 +45,88 @@ import java.io.OutputStream
 import java.io.File
 import java.util.Locale
 
+/** Exact identity a download must have before Apple playback may use it. */
+internal data class AudioIdentity(
+    val provider: String? = null,
+    val sourceId: String? = null,
+    val originalVideoId: String? = null,
+    val appleCatalogId: String? = null,
+    val durationMs: Long? = null,
+    val byteLength: Long? = null,
+)
+
+/** Runtime agreement allowed between two duration statements. */
+private const val AUDIO_DURATION_TOLERANCE_MS = 2_000L
+
+/**
+ * Whether a saved record has the exact identity requested.
+ *
+ * Pure so the admission rule can be tested without a device or a download
+ * index. Apple mode requires every stated identity field to agree and requires
+ * a recorded byte length; a legacy record without provenance cannot stand in
+ * for an exact Apple recording.
+ */
+internal fun audioIdentityMatches(expected: AudioIdentity, saved: AudioIdentity): Boolean {
+    if (expected.sourceId != null && expected.sourceId != saved.sourceId) return false
+    if (expected.provider != null && expected.provider != saved.provider) return false
+    if (expected.originalVideoId != null && expected.originalVideoId != saved.originalVideoId) return false
+    if (expected.appleCatalogId != null && expected.appleCatalogId != saved.appleCatalogId) return false
+    if (expected.provider?.equals("Apple Music", ignoreCase = true) == true &&
+        (saved.byteLength == null || saved.byteLength <= 0L)
+    ) return false
+    if (expected.byteLength != null && expected.byteLength != saved.byteLength) return false
+    val wantedDuration = expected.durationMs
+    val savedDuration = saved.durationMs
+    if (wantedDuration != null && wantedDuration > 0L) {
+        if (savedDuration == null || savedDuration <= 0L) return false
+        if (kotlin.math.abs(wantedDuration - savedDuration) > AUDIO_DURATION_TOLERANCE_MS) return false
+    }
+    return true
+}
+
+/** Exact Apple source and ids used by a download. */
+internal data class ExactAppleDownloadIdentity(
+    val sourceId: String,
+    val streamId: String,
+    val appleCatalogId: String,
+    val originalVideoId: String,
+)
+
+/**
+ * Selects the exact Apple download identity.
+ *
+ * A source-backed Apple row keeps its pinned source and stream id. An enriched
+ * discovery row uses Apple's catalogue id with the current exact Apple source.
+ * Name matching and generic-source fallback are deliberately absent.
+ */
+internal fun exactAppleDownloadIdentity(
+    originalVideoId: String,
+    sourceId: String?,
+    sourceStreamId: String?,
+    sourceIsApple: Boolean,
+    appleCatalogId: String?,
+    currentAppleSourceId: String?,
+): ExactAppleDownloadIdentity? {
+    val catalog = appleCatalogId?.takeIf(String::isNotBlank) ?: return null
+    return when {
+        sourceId != null && sourceIsApple -> ExactAppleDownloadIdentity(
+            sourceId = sourceId,
+            streamId = sourceStreamId?.takeIf(String::isNotBlank) ?: return null,
+            appleCatalogId = catalog,
+            originalVideoId = originalVideoId,
+        )
+        sourceId == null -> currentAppleSourceId?.takeIf(String::isNotBlank)?.let {
+            ExactAppleDownloadIdentity(
+                sourceId = it,
+                streamId = catalog,
+                appleCatalogId = catalog,
+                originalVideoId = originalVideoId,
+            )
+        }
+        else -> null
+    }
+}
+
 /** Where a track is between "not on this device" and "on it". */
 sealed interface DownloadState {
 
@@ -555,8 +637,23 @@ object Downloads {
      * has just been shown to be false is not worth keeping to be shown false
      * again on the next play.
      */
-    fun verifiedSavedUri(videoId: String): String? {
+    internal fun verifiedSavedUri(videoId: String, expectedIdentity: AudioIdentity? = null): String? {
         val recorded = _saved.value[videoId] ?: return null
+        if (expectedIdentity != null) {
+            val saved = _savedMetadata.value[videoId] ?: return null
+            val savedIdentity = AudioIdentity(
+                provider = saved.provider,
+                sourceId = saved.sourceId,
+                originalVideoId = saved.originalVideoId,
+                appleCatalogId = saved.appleCatalogId,
+                durationMs = saved.durationMs,
+                byteLength = saved.byteLength,
+            )
+            if (!audioIdentityMatches(expectedIdentity, savedIdentity)) {
+                Log.d(TAG, "$videoId has a pre-Apple or mismatched download identity; not using it in Apple mode")
+                return null
+            }
+        }
         if (!isMissingLocalFile(recorded)) return recorded
         Log.d(TAG, "$videoId was downloaded but the file is gone; forgetting it")
         forget(videoId)
@@ -833,6 +930,18 @@ object Downloads {
 
     private val collectionLock = Any()
 
+    /** Byte length of a saved artifact, when the platform can state it. */
+    private fun byteLengthOf(context: Context, uri: Uri): Long? {
+        if (uri.scheme == "file") {
+            return uri.path?.let { File(it).length() }?.takeIf { it > 0L }
+        }
+        return runCatching {
+            context.contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
+                descriptor.statSize.takeIf { it > 0L }
+            }
+        }.getOrNull()
+    }
+
     /**
      * Record one file under every id it could be asked about.
      *
@@ -848,6 +957,10 @@ object Downloads {
         uri: Uri,
         downloadFormat: String? = null,
         artworkUri: String? = null,
+        provider: String? = null,
+        sourceId: String? = null,
+        durationMs: Long? = null,
+        byteLength: Long? = null,
     ) {
         val ids = setOf(asked.videoId, fetched.videoId)
         // MediaStore supplies this for exported downloads, but app-private and
@@ -876,6 +989,17 @@ object Downloads {
         // is both, and an album page's rows are neither.
         val album = fetched.albumName?.takeIf { it.isNotBlank() }
             ?: asked.albumName?.takeIf { it.isNotBlank() }
+        val originalVideoId = asked.videoId
+        val appleCatalogId = asked.appleCatalogId?.takeIf(String::isNotBlank)
+            ?: fetched.appleCatalogId?.takeIf(String::isNotBlank)
+        val contentRating = fetched.contentRating?.takeIf(String::isNotBlank)
+            ?: asked.contentRating?.takeIf(String::isNotBlank)
+        val isExplicit = fetched.isExplicit ?: asked.isExplicit
+        val isrc = fetched.isrc?.takeIf(String::isNotBlank)
+            ?: asked.isrc?.takeIf(String::isNotBlank)
+        val recordedDurationMs = durationMs
+            ?: TrackMatcher.secondsOf(asked.durationText)?.let { it * 1_000L }
+            ?: TrackMatcher.secondsOf(fetched.durationText)?.let { it * 1_000L }
         val metaAsked = SavedSongMetadata(
             videoId = asked.videoId,
             title = asked.title,
@@ -886,6 +1010,15 @@ object Downloads {
             uri = uri.toString(),
             downloadFormat = downloadFormat,
             dateAddedSeconds = dateAddedSeconds,
+            provider = provider,
+            sourceId = sourceId,
+            originalVideoId = originalVideoId,
+            appleCatalogId = appleCatalogId,
+            isExplicit = isExplicit,
+            contentRating = contentRating,
+            isrc = isrc,
+            durationMs = recordedDurationMs,
+            byteLength = byteLength,
         )
         val metaFetched = SavedSongMetadata(
             videoId = fetched.videoId,
@@ -897,6 +1030,15 @@ object Downloads {
             uri = uri.toString(),
             downloadFormat = downloadFormat,
             dateAddedSeconds = dateAddedSeconds,
+            provider = provider,
+            sourceId = sourceId,
+            originalVideoId = originalVideoId,
+            appleCatalogId = appleCatalogId,
+            isExplicit = isExplicit,
+            contentRating = contentRating,
+            isrc = isrc,
+            durationMs = recordedDurationMs,
+            byteLength = byteLength,
         )
         record(
             saved = { it + ids.associateWith { id -> uri.toString() } },
@@ -926,6 +1068,12 @@ object Downloads {
                     thumbnailUrl = meta.thumbnailUrl,
                     durationText = meta.durationText,
                     albumName = meta.albumName,
+                    appleCatalogId = meta.appleCatalogId,
+                    isExplicit = meta.isExplicit,
+                    contentRating = meta.contentRating,
+                    isrc = meta.isrc,
+                    playbackSource = meta.provider,
+                    playbackSourceId = meta.sourceId,
                     localUri = meta.uri,
                     downloadFormat = meta.downloadFormat,
                     localDateAddedSeconds = meta.dateAddedSeconds,
@@ -1059,6 +1207,12 @@ object Downloads {
                 thumbnailUrl = meta.thumbnailUrl,
                 durationText = meta.durationText,
                 albumName = meta.albumName,
+                appleCatalogId = meta.appleCatalogId,
+                isExplicit = meta.isExplicit,
+                contentRating = meta.contentRating,
+                isrc = meta.isrc,
+                playbackSource = meta.provider,
+                playbackSourceId = meta.sourceId,
                 localUri = meta.uri,
                 downloadFormat = meta.downloadFormat,
                 localDateAddedSeconds = meta.dateAddedSeconds,
@@ -1109,6 +1263,12 @@ object Downloads {
                         thumbnailUrl = meta.thumbnailUrl,
                         durationText = meta.durationText,
                         albumName = meta.albumName,
+                        appleCatalogId = meta.appleCatalogId,
+                        isExplicit = meta.isExplicit,
+                        contentRating = meta.contentRating,
+                        isrc = meta.isrc,
+                        playbackSource = meta.provider,
+                        playbackSourceId = meta.sourceId,
                         localUri = meta.uri,
                         downloadFormat = downloadFormat,
                         localDateAddedSeconds = dateAddedSeconds,
@@ -1186,6 +1346,12 @@ object Downloads {
                 thumbnailUrl = row.thumbnailUrl,
                 durationText = row.durationText,
                 albumName = row.albumName,
+                appleCatalogId = row.appleCatalogId,
+                isExplicit = row.isExplicit,
+                contentRating = row.contentRating,
+                isrc = row.isrc,
+                playbackSource = row.provider,
+                playbackSourceId = row.sourceId,
                 localUri = row.uri,
                 downloadFormat = row.downloadFormat,
                 localDateAddedSeconds = row.dateAddedSeconds,
@@ -1241,6 +1407,12 @@ object Downloads {
                     thumbnailUrl = meta.thumbnailUrl,
                     durationText = meta.durationText,
                     albumName = meta.albumName,
+                    appleCatalogId = meta.appleCatalogId,
+                    isExplicit = meta.isExplicit,
+                    contentRating = meta.contentRating,
+                    isrc = meta.isrc,
+                    playbackSource = meta.provider,
+                    playbackSourceId = meta.sourceId,
                     localUri = uriString,
                     downloadFormat = meta.downloadFormat ?: legacyYoutubeDownloadBadge(context, uri),
                     localDateAddedSeconds = dateAddedSeconds,
@@ -1413,7 +1585,7 @@ object Downloads {
         // be lossless are worth guessing at: an `.m4a` may be this app's ALAC
         // or its AAC, and adopting the wrong one would quietly answer a request
         // for lossless with a transcode.
-        if (quality.keepsLossless) {
+        if (quality.keepsLossless && !AppSettings.appleRichModeEnabled) {
             LOSSLESS_EXTENSIONS.firstNotNullOfOrNull { extension ->
                 DownloadStore.existing(context, DownloadStore.fileNameFor(track, extension))
             }?.let { uri ->
@@ -1458,7 +1630,15 @@ object Downloads {
         // Already there from a previous run the record lost track of — adopt it
         // rather than writing a second copy beside it.
         plan.alreadyAt?.let { uri ->
-            remember(song, track, uri)
+            remember(
+                asked = song,
+                fetched = track,
+                uri = uri,
+                provider = plan.route?.provider,
+                sourceId = plan.route?.sourceId,
+                durationMs = plan.route?.durationSec?.let { it * 1_000L },
+                byteLength = byteLengthOf(context, uri),
+            )
             DownloadSession.done(id)
             clear(id)
             return
@@ -1466,6 +1646,7 @@ object Downloads {
         val route = plan.route ?: error("Nothing to download")
 
         var pending: DownloadStore.Pending? = null
+        var transferredBytes = 0L
         var lyrics: Deferred<LyricsTag.Embeddable?>? = null
         var artwork: Deferred<MediaTagger.Artwork?>? = null
         try {
@@ -1492,10 +1673,25 @@ object Downloads {
                 }
 
                 val name = DownloadStore.fileNameFor(track, route.extension)
-                val alreadyThere = DownloadStore.existing(context, name)
+                // An Apple file found by name has no provenance yet. Adopting it
+                // would reintroduce the very old identity this mode forbids, so
+                // only an exact Apple stream may create the replacement.
+                val alreadyThere = if (route.provider == "Apple Music") {
+                    null
+                } else {
+                    DownloadStore.existing(context, name)
+                }
                 if (alreadyThere != null) {
                     Log.d(TAG, "$name is already in Music; adopting it")
-                    remember(song, track, alreadyThere)
+                    remember(
+                        asked = song,
+                        fetched = track,
+                        uri = alreadyThere,
+                        provider = route.provider,
+                        sourceId = route.sourceId,
+                        durationMs = route.durationSec?.let { it * 1_000L },
+                        byteLength = byteLengthOf(context, alreadyThere),
+                    )
                     DownloadSession.done(id)
                     clear(id)
                     return@coroutineScope
@@ -1504,6 +1700,8 @@ object Downloads {
                 val manifest = route.offlineHls
                 if (manifest != null) {
                     val onSegment: (Long, Long) -> Unit = { written, total ->
+                        // HLS/DASH progress counts segments, not bytes. Keep it
+                        // out of the persisted byte-length provenance.
                         val fraction = written.toFloat() / total
                         publishProgress(id, fraction)
                     }
@@ -1528,7 +1726,16 @@ object Downloads {
                             artwork = artwork?.await(),
                         )
                     }
-                    remember(song, track, savedUri, route.downloadFormat)
+                    remember(
+                        asked = song,
+                        fetched = track,
+                        uri = savedUri,
+                        downloadFormat = route.downloadFormat,
+                        provider = route.provider,
+                        sourceId = route.sourceId,
+                        durationMs = route.durationSec?.let { it * 1_000L },
+                        byteLength = byteLengthOf(context, savedUri),
+                    )
                     DownloadSession.done(id)
                     clear(id)
                     Log.d(TAG, "saved offline ${if (manifest.dash) "DASH" else "HLS"} package for $name")
@@ -1539,6 +1746,7 @@ object Downloads {
                 pending = destination
                 destination.openStream().use { sink ->
                     route.write(sink) { written, total ->
+                        transferredBytes = maxOf(transferredBytes, written)
                         val fraction = written.toFloat() / total
                         publishProgress(id, fraction)
                     }
@@ -1551,7 +1759,18 @@ object Downloads {
                 val artworkUri = MediaTagger.persistArtwork(context, track.thumbnailUrl, cover)
                 val savedUri = destination.commit()
                 pending = null
-                remember(song, track, savedUri, route.downloadFormat, artworkUri)
+                remember(
+                    asked = song,
+                    fetched = track,
+                    uri = savedUri,
+                    downloadFormat = route.downloadFormat,
+                    artworkUri = artworkUri,
+                    provider = route.provider,
+                    sourceId = route.sourceId,
+                    durationMs = route.durationSec?.let { it * 1_000L },
+                    byteLength = byteLengthOf(context, savedUri).takeIf { it > 0L }
+                        ?: transferredBytes.takeIf { it > 0L },
+                )
                 DownloadSession.done(id)
                 clear(id)
                 Log.d(TAG, "saved $name")
@@ -1587,6 +1806,12 @@ object Downloads {
         val describe: String,
         /** Short premium-rendition badge shown only in BitChord's Downloads list. */
         val downloadFormat: String? = null,
+        /** Provider that served the recording. */
+        val provider: String? = null,
+        /** Exact provider source/config id. */
+        val sourceId: String? = null,
+        /** Catalogue duration in seconds, when the source stated it. */
+        val durationSec: Int? = null,
         val taggable: Boolean = true,
         /**
          * Whether to go looking for lyrics for this file.
@@ -1624,7 +1849,95 @@ object Downloads {
      *   than to the middle of this one. [Downloader.fetch] resolves again after
      *   a mid-download refusal and has to ask for the same rung it started on.
      */
+    /** Provider label recorded with a download. */
+    private fun providerFor(sourceId: String?): String? = sourceId?.let {
+        if (SourceRegistry.isAppleRole(it)) {
+            "Apple Music"
+        } else {
+            SourceRegistry.config(it)?.displayName ?: SourceRegistry.config(it)?.kind?.label
+        }
+    }
+
     private suspend fun routeFor(context: Context, track: Song, quality: DownloadQuality): Route {
+        val sourceTrack = SourceRegistry.parseTrackKey(track.videoId)
+        val sourceIsApple = sourceTrack?.first?.let(SourceRegistry::isAppleRole) == true
+        val appleDiscovery = AppSettings.appleRichModeEnabled &&
+            sourceTrack == null &&
+            !track.videoId.startsWith("http://", ignoreCase = true) &&
+            !track.videoId.startsWith("https://", ignoreCase = true)
+        if (AppSettings.appleRichModeEnabled && (sourceIsApple || appleDiscovery)) {
+            // Strict Apple download: one pinned source and one exact id. This
+            // branch deliberately has no generic matcher and no YouTube fallback.
+            // A missing identity is an error the listener can act on, not a
+            // reason to download a different recording.
+            val identity = exactAppleDownloadIdentity(
+                originalVideoId = track.videoId,
+                sourceId = sourceTrack?.first,
+                sourceStreamId = sourceTrack?.second,
+                sourceIsApple = sourceIsApple,
+                appleCatalogId = track.appleCatalogId,
+                currentAppleSourceId = track.playbackSourceId?.takeIf(SourceRegistry::isAppleRole)
+                    ?: SourceRegistry.appleCatalogConfig()?.id,
+            ) ?: throw IllegalArgumentException(
+                "Apple Music download requires an exact catalogue id and " +
+                    "Apple source for '${track.title}'",
+            )
+            val stream = SourceResolver.resolve(
+                configId = identity.sourceId,
+                trackId = identity.streamId,
+                target = TrackMatcher.targetOf(track),
+            ) ?: throw IllegalArgumentException(
+                "Apple Music source '${identity.sourceId}' could not serve " +
+                    "catalogue item '${identity.appleCatalogId}'",
+            )
+            if (stream.sourceConfigId != null && stream.sourceConfigId != identity.sourceId) {
+                throw IllegalArgumentException("Apple Music download identity changed while resolving '${track.title}'")
+            }
+            val storable = DownloadStore.storable(stream.format.codec)
+                ?: throw IllegalArgumentException(
+                    "Apple Music returned '${stream.format.codec}', which this device cannot save",
+                )
+            val dash = OfflineDash.handles(stream.url)
+            val hls = stream.url.substringBefore('?').endsWith(".m3u8", ignoreCase = true)
+            val packaged = hls || dash
+            val downloadHeaders = stream.headers + ("X-Auris-Download" to "1")
+            if (packaged && storable.extension in ManifestFile.EXTENSIONS) {
+                return Route(
+                    extension = storable.extension,
+                    mimeType = storable.mimeType,
+                    describe = "${stream.format.summary} (assembled from ${if (dash) "DASH" else "HLS"})",
+                    downloadFormat = stream.format.downloadBadge(),
+                    provider = "Apple Music",
+                    sourceId = identity.sourceId,
+                    durationSec = stream.durationSec,
+                    write = { sink, onProgress ->
+                        ManifestFile.write(
+                            context.cacheDir,
+                            stream.url,
+                            downloadHeaders,
+                            dash,
+                            storable.extension,
+                            sink,
+                            onProgress,
+                        )
+                    },
+                )
+            }
+            return Route(
+                extension = if (packaged) "m3u8" else storable.extension,
+                mimeType = if (packaged) "application/vnd.apple.mpegurl" else storable.mimeType,
+                describe = stream.format.summary,
+                downloadFormat = stream.format.downloadBadge(),
+                provider = "Apple Music",
+                sourceId = identity.sourceId,
+                durationSec = stream.durationSec,
+                taggable = true,
+                offlineHls = Manifest(stream.url, downloadHeaders, packaged).takeIf { packaged },
+                write = { sink, onProgress ->
+                    Downloader.fetchDirect(stream.url, downloadHeaders, sink, onProgress)
+                },
+            )
+        }
         // A podcast episode and an audiobook chapter are not catalogue tracks:
         // their id *is* the address of the recording, put there by the feed.
         // There is nothing to match against a catalogue and nothing to resolve
@@ -1654,6 +1967,9 @@ object Downloads {
                     mimeType = storable.mimeType,
                     describe = "${stream.format.summary} (assembled from ${if (dash) "DASH" else "HLS"})",
                     downloadFormat = stream.format.downloadBadge(),
+                    provider = providerFor(stream.sourceConfigId),
+                    sourceId = stream.sourceConfigId,
+                    durationSec = stream.durationSec,
                     write = { sink, onProgress ->
                         ManifestFile.write(
                             context.cacheDir, stream.url, stream.headers, dash,
@@ -1674,6 +1990,9 @@ object Downloads {
                 mimeType = if (packaged) "application/vnd.apple.mpegurl" else storable.mimeType,
                 describe = stream.format.summary,
                 downloadFormat = stream.format.downloadBadge(),
+                provider = providerFor(stream.sourceConfigId),
+                sourceId = stream.sourceConfigId,
+                durationSec = stream.durationSec,
                 taggable = true,
                 offlineHls = Manifest(stream.url, stream.headers, dash = dash).takeIf { packaged },
                 write = { sink, onProgress ->
@@ -1697,6 +2016,9 @@ object Downloads {
             mimeType = stream.downloadMimeType,
             describe = "${stream.kbps}kbps ${stream.mimeType}",
             downloadFormat = youtubeDownloadBadge(stream.downloadExtension, stream.kbps),
+            provider = "YouTube",
+            sourceId = "youtube",
+            durationSec = TrackMatcher.secondsOf(track.durationText),
             write = { sink, onProgress ->
                 Downloader.fetch(track.videoId, stream, quality.maxKbps, requireM4a, sink, onProgress)
             },
@@ -1736,6 +2058,9 @@ object Downloads {
             extension = extension,
             mimeType = DIRECT_MIME_TYPES[extension] ?: "audio/mpeg",
             describe = "direct file",
+            provider = "Direct",
+            sourceId = "direct",
+            durationSec = TrackMatcher.secondsOf(track.durationText),
             lyrics = false,
             write = { sink, onProgress ->
                 Downloader.fetchDirect(url, emptyMap(), sink, onProgress)
@@ -1948,6 +2273,24 @@ internal data class SavedSongMetadata(
     val downloadFormat: String? = null,
     /** Stable creation time for downloads that MediaStore does not index. */
     val dateAddedSeconds: Long? = null,
+    /** Provider that served the recording, e.g. "Apple Music" or "YouTube". */
+    val provider: String? = null,
+    /** Exact provider source/config id, including the pinned Apple addon. */
+    val sourceId: String? = null,
+    /** Identity the row had before Apple enrichment. */
+    val originalVideoId: String? = null,
+    /** Apple's exact catalogue id. */
+    val appleCatalogId: String? = null,
+    /** Explicit-content state of the exact downloaded recording. */
+    val isExplicit: Boolean? = null,
+    /** Original catalogue content rating. */
+    val contentRating: String? = null,
+    /** ISRC naming the exact downloaded recording. */
+    val isrc: String? = null,
+    /** Downloaded stream duration in milliseconds. */
+    val durationMs: Long? = null,
+    /** Downloaded byte length. */
+    val byteLength: Long? = null,
 )
 
 /**

@@ -7,6 +7,7 @@ import com.music.bitchord.data.flow.FlowConfig
 import com.music.bitchord.data.flow.FlowMood
 import com.music.bitchord.data.flow.FlowTuner
 import com.music.bitchord.data.model.Song
+import com.music.bitchord.data.settings.AppSettings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,6 +32,7 @@ object FlowStore {
     private const val KEY_BANNED = "flow_banned"
     private const val KEY_SKIPS = "flow_skips"
     private const val KEY_SEED_CURSOR = "flow_seed_cursor"
+    private const val KEY_FLOW_ALGORITHM = "flow_algorithm"
 
     private const val MAX_BANNED = 200
     private const val MAX_SKIPS = 300
@@ -72,7 +74,7 @@ object FlowStore {
      * older build is read back as if it were current otherwise, and the mix
      * the listener sees is the one the previous build built.
      */
-    private const val SNAPSHOT_VERSION = 2
+    private const val SNAPSHOT_VERSION = 3
 
     /** A snapshot older than this rebuilds instead of restoring. */
     const val FLOW_TTL_MS = 24L * 60 * 60 * 1000
@@ -91,6 +93,7 @@ object FlowStore {
             .putLong(KEY_FLOW_BUILT_AT, System.currentTimeMillis())
             .putInt(KEY_FLOW_SNAPSHOT_VERSION, SNAPSHOT_VERSION)
             .putInt(KEY_FLOW_SNAPSHOT_APP, BuildConfig.VERSION_CODE)
+            .putString(KEY_FLOW_ALGORITHM, AppSettings.recommendationAlgorithm.value.name)
             .apply()
     }
 
@@ -115,6 +118,11 @@ object FlowStore {
             clearSnapshot()
             return null
         }
+        val storedAlgorithm = prefs.getString(KEY_FLOW_ALGORITHM, null)
+        if (storedAlgorithm != null && storedAlgorithm != AppSettings.recommendationAlgorithm.value.name) {
+            clearSnapshot()
+            return null
+        }
         val text = prefs.getString(KEY_FLOW_SNAPSHOT, null)?.takeIf { it.isNotEmpty() }
             ?: return null
         val songs = decodeFlowSnapshot(text)
@@ -130,6 +138,7 @@ object FlowStore {
             .remove(KEY_FLOW_BUILT_AT)
             .remove(KEY_FLOW_SNAPSHOT_VERSION)
             .remove(KEY_FLOW_SNAPSHOT_APP)
+            .remove(KEY_FLOW_ALGORITHM)
             .apply()
     }
 
@@ -269,6 +278,8 @@ fun encodeFlowSnapshot(songs: List<Song>): String =
             s.videoId, s.title, s.artist,
             s.albumName.orEmpty(), s.thumbnailUrl.orEmpty(),
             s.appleCatalogId.orEmpty(), s.appleLookupError.orEmpty(),
+            if (s.isExplicit == true) "1" else "",
+            s.contentRating.orEmpty(), s.isrc.orEmpty(),
         ).joinToString("\u001f") { it.replace("\u001e", " ").replace("\u001f", " ") }
     }
 
@@ -286,6 +297,9 @@ fun decodeFlowSnapshot(text: String): List<Song> {
             albumName = f.getOrNull(3)?.takeIf { it.isNotBlank() },
             appleCatalogId = f.getOrNull(5)?.takeIf { it.isNotBlank() },
             appleLookupError = f.getOrNull(6)?.takeIf { it.isNotBlank() },
+            isExplicit = if (f.getOrNull(7) == "1") true else null,
+            contentRating = f.getOrNull(8)?.takeIf { it.isNotBlank() },
+            isrc = f.getOrNull(9)?.takeIf { it.isNotBlank() },
         )
     }
 }

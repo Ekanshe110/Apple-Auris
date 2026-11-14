@@ -14,6 +14,7 @@ import com.music.bitchord.data.AppAnnouncements
 import com.music.bitchord.data.AppUpdateChecker
 import com.music.bitchord.data.LocalMediaRepository
 import com.music.bitchord.data.apple.AppleEnrichment
+import com.music.bitchord.data.apple.AppleHomeSource
 import com.music.bitchord.data.LikeState
 import com.music.bitchord.data.presence.AndroidPresence
 import com.music.bitchord.data.YtMusicRepository
@@ -33,6 +34,7 @@ import com.music.bitchord.data.lyrics.LyricsRepository
 import com.music.bitchord.data.lyrics.LyricsSource
 import com.music.bitchord.data.settings.AppSettings
 import com.music.bitchord.data.settings.HomeProvider
+import com.music.bitchord.data.settings.RecommendationAlgorithm
 import com.music.bitchord.data.spotify.SpotifyHomeSource
 import com.music.bitchord.data.settings.withoutBlockedArtists
 import com.music.bitchord.data.settings.withoutBlockedRecommendations
@@ -97,9 +99,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -150,6 +152,56 @@ enum class SearchSource {
 
     /** An explicitly configured Apple Music addon catalogue. */
     APPLE,
+}
+
+/** The error shown when Apple mode cannot name the exact recording. */
+internal const val APPLE_CATALOGUE_MATCH_UNAVAILABLE = "Apple catalogue match unavailable"
+
+/**
+ * The catalogue Search starts in for a content provider.
+ *
+ * Apple mode owns discovery and playback together, so its Search tab starts
+ * in Apple's catalogue. The other providers keep their own defaults. The
+ * sources remain switchable afterwards; this is only the answer for a fresh
+ * session or a provider change.
+ */
+internal fun defaultSearchSource(provider: HomeProvider): SearchSource = when (provider) {
+    HomeProvider.YOUTUBE -> SearchSource.YOUTUBE
+    HomeProvider.SPOTIFY -> SearchSource.SPOTIFY
+    HomeProvider.APPLE -> SearchSource.APPLE
+}
+
+/**
+ * Whether a row still needs an exact Apple catalogue identity.
+ *
+ * Discovery rows need one in Apple mode: their provider id names a recording
+ * only in that provider, and resolving it by title would risk choosing another
+ * recording. Source-backed rows already carry an exact source identity, and
+ * local/direct media rows need no catalogue lookup.
+ */
+internal fun appleCatalogueMatchUnavailable(
+    song: Song,
+    appleModeEnabled: Boolean,
+): Boolean {
+    if (!appleModeEnabled) return false
+    if (!song.appleCatalogId.isNullOrBlank()) return false
+    if (!song.localUri.isNullOrBlank()) return false
+    if (song.videoId.startsWith("http://") || song.videoId.startsWith("https://")) return false
+    if (song.videoId.startsWith("content://") || song.videoId.startsWith("file://")) return false
+    if (song.videoId.startsWith("src:")) return false
+    return true
+}
+
+/** Whether any track row in a search result lacks an exact Apple identity. */
+internal fun appleCatalogueMatchUnavailable(
+    rows: List<SearchResult>,
+    appleModeEnabled: Boolean,
+): Boolean = rows.any { row ->
+    when (row) {
+        is SearchResult.TopTrack -> appleCatalogueMatchUnavailable(row.song, appleModeEnabled)
+        is SearchResult.Track -> appleCatalogueMatchUnavailable(row.song, appleModeEnabled)
+        is SearchResult.Browse -> false
+    }
 }
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -532,7 +584,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val typeaheadResults: StateFlow<List<SearchResult>> = _typeaheadResults.asStateFlow()
 
     /** Where the Search tab looks — see [setSearchSource]. */
-    private val _searchSource = MutableStateFlow(SearchSource.YOUTUBE)
+    private val _searchSource = MutableStateFlow(defaultSearchSource(AppSettings.homeProvider.value))
     val searchSource: StateFlow<SearchSource> = _searchSource.asStateFlow()
 
     /** Every track in the Local Music folder, read when the Library source is picked. */
@@ -663,6 +715,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val album: String?,
         val appleSongId: String?,
         val strictApple: Boolean,
+        val isrc: String?,
+        val isExplicit: Boolean,
     )
 
     private var currentLyricsRequest: LyricsRequest? = null
@@ -696,6 +750,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         localUri: String? = null,
         appleSongId: String? = null,
         strictApple: Boolean = false,
+        isrc: String? = null,
+        isExplicit: Boolean = false,
     ) {
         val sources = if (AppSettings.syncedLyrics.value) {
             AppSettings.lyricsSources.value
@@ -717,13 +773,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val generation = lyricsGeneration
         val resolvedAppleSongId = appleSongId?.trim()?.takeIf { it.isNotEmpty() }
         currentLyricsRequest = LyricsRequest(
-            videoId,
-            title,
-            artist,
-            durationMs,
-            album,
-            resolvedAppleSongId,
-            strictApple,
+            videoId = videoId,
+            title = title,
+            artist = artist,
+            durationMs = durationMs,
+            album = album,
+            appleSongId = resolvedAppleSongId,
+            strictApple = strictApple,
+            isrc = isrc,
+            isExplicit = isExplicit,
         )
         selectedLyricsSource = null
         manualLyricsJobs.values.forEach(Job::cancel)
@@ -772,6 +830,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 onSourceCancelled = { source -> providerCancelled(generation, source) },
                 appleSongId = resolvedAppleSongId,
                 strictApple = strictApple,
+                isrc = isrc,
+                isExplicit = isExplicit,
             )
             val selected = selectedLyricsSource?.let(lyricsProviderResults::get) ?: found
             _lyrics.value = selected?.lines
@@ -826,6 +886,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 onSourceCancelled = { provider -> providerCancelled(generation, provider) },
                 appleSongId = request.appleSongId,
                 strictApple = request.strictApple,
+                isrc = request.isrc,
+                isExplicit = request.isExplicit,
             )
         }
     }
@@ -1938,16 +2000,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     init {
-        // A Spotify session opens on Spotify's catalogue. The listener chose
-        // that provider, and the search tab answering from another catalogue
-        // is a surprise; the switcher is still there to pick another.
-        if (AppSettings.homeProvider.value == HomeProvider.SPOTIFY) {
-            _searchSource.value = SearchSource.SPOTIFY
-        }
+        // The selected content provider also owns Search's initial catalogue.
+        // The switcher is still there afterwards: this only chooses the answer
+        // for a fresh session or a provider change.
         startSearchPipeline()
         startSuggestPipeline()
         startTypeaheadMediaPipeline()
+        viewModelScope.launch {
+            AppSettings.homeProvider.collect { provider ->
+                // A cached answer was enriched under the previous provider's
+                // rules. Do not show it after Apple mode makes identity strict.
+                searchCache.evictAll()
+                setSearchSource(defaultSearchSource(provider))
+            }
+        }
         watchHomeShelfSettings()
+        viewModelScope.launch {
+            // Discovery follows the selected algorithm immediately. The setting
+            // is separate from the content provider, so changing it must not
+            // disturb the library or playback backend; it must only replace
+            // the recommendation surfaces.
+            AppSettings.recommendationAlgorithm.drop(1).collect {
+                FlowStore.clearSnapshot()
+                loadHome()
+                if (_flowQueue.value is UiState.Success) refreshFlow()
+            }
+        }
         loadHome()
         // The podcasts page's own shelves, from the last launch, published
         // before the tab is even opened — so the page has something on it the
@@ -2394,7 +2472,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // and again when the load failed — left a listener who had narrowed the
         // page stuck in the narrowed page. Only a change of provider clears
         // it, because only then is it another provider's header.
-        if (AppSettings.homeProvider.value != HomeProvider.SPOTIFY) {
+        if (AppSettings.recommendationAlgorithm.value != RecommendationAlgorithm.SPOTIFY) {
             _homeHeader.value = null
         }
         _homeLoadingMore.value = false
@@ -2404,17 +2482,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // one at the tail.
         _homePendingShelves.value = 1 + YtMusicRepository.HOME_SUPPLEMENT_BROWSE_IDS.size
 
-        // The provider decides what a feed *is*, so the YouTube fan-out below is
-        // not something to run and then discard: a Spotify home is built from
-        // Spotify's own rows, matched to playable tracks, and pages no further.
-        // The two above counters are set for requests this path never makes, so
-        // they are cleared rather than left to draw skeletons that never fill.
-        if (AppSettings.homeProvider.value == HomeProvider.SPOTIFY) {
-            _homePendingShelves.value = 0
-            _homeRecentlyPlayedLoading.value = false
-            loadSpotifyHome(identity, generation)
-            return
+        // The recommendation algorithm decides what a feed is. It is separate
+        // from the content provider: this changes discovery only, never the
+        // catalogue, library or playback backend.
+        when (AppSettings.recommendationAlgorithm.value) {
+            RecommendationAlgorithm.SPOTIFY -> {
+                _homePendingShelves.value = 0
+                _homeRecentlyPlayedLoading.value = false
+                loadSpotifyHome(identity, generation, reportEmpty = true)
+            }
+            RecommendationAlgorithm.APPLE -> {
+                _homePendingShelves.value = 0
+                _homeRecentlyPlayedLoading.value = false
+                loadAppleHome(identity, generation, reportEmpty = true)
+            }
+            RecommendationAlgorithm.YOUTUBE -> loadYoutubeHome(identity, generation, reportEmpty = true)
+            RecommendationAlgorithm.ALL -> {
+                loadYoutubeHome(identity, generation, reportEmpty = false)
+                loadSpotifyHome(identity, generation, reportEmpty = false)
+                loadAppleHome(identity, generation, reportEmpty = false)
+            }
         }
+    }
+
+    /** YouTube Music's own Home fan-out. */
+    private fun loadYoutubeHome(
+        identity: String?,
+        generation: Long,
+        reportEmpty: Boolean,
+    ) {
         viewModelScope.launch {
             launch {
                 try {
@@ -2425,7 +2521,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                             publishHomeShelves(feed.shelves, identity, generation)
                         }
                         .onFailure { failure ->
-                            if (isCurrentHomeLoad(identity, generation) && _home.value !is UiState.Success) {
+                            if (
+                                reportEmpty &&
+                                isCurrentHomeLoad(identity, generation) &&
+                                _home.value !is UiState.Success
+                            ) {
                                 _home.value = UiState.Error(failure.friendly())
                             }
                         }
@@ -2478,7 +2578,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * is a fixed set of rows read once, so [homeContinuation] stays null and
      * scrolling to the bottom simply stops.
      */
-    private fun loadSpotifyHome(identity: String?, generation: Long) {
+    private fun loadSpotifyHome(
+        identity: String?,
+        generation: Long,
+        reportEmpty: Boolean,
+    ) {
         homeContinuation = null
         val facet = homeFacet.value
         viewModelScope.launch {
@@ -2490,11 +2594,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // feed read and found to hold no cards — and they need opposite
                 // fixes, so the message names the one that happened instead of
                 // saying "nothing to show" to all of them.
-                _home.value = UiState.Error(outcome?.reason ?: "Spotify returned nothing to show")
+                if (reportEmpty && _home.value !is UiState.Success) {
+                    _home.value = UiState.Error(outcome?.reason ?: "Spotify returned nothing to show")
+                }
                 return@launch
             }
-            _homeHeader.value = outcome.header
+            if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.SPOTIFY) {
+                _homeHeader.value = outcome.header
+            }
             publishHomeShelves(outcome.shelves, identity, generation)
+        }
+    }
+
+    /** Apple Music's own personalised Home feed. */
+    private fun loadAppleHome(
+        identity: String?,
+        generation: Long,
+        reportEmpty: Boolean,
+    ) {
+        homeContinuation = null
+        viewModelScope.launch {
+            val outcome = AppleHomeSource.shelf().getOrNull()
+            if (!isCurrentHomeLoad(identity, generation)) return@launch
+            if (outcome == null || outcome.items.isEmpty()) {
+                if (reportEmpty && _home.value !is UiState.Success) {
+                    _home.value = UiState.Error("Apple Music returned no recommendations")
+                }
+                return@launch
+            }
+            publishHomeShelves(listOf(outcome), identity, generation)
         }
     }
 
@@ -2511,18 +2639,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * the row a toggle nobody could read the state of.
      */
     fun selectHomeChip(chip: String) {
-        if (AppSettings.homeProvider.value != HomeProvider.SPOTIFY) return
+        if (!AppSettings.recommendationAlgorithm.value.includes(RecommendationAlgorithm.SPOTIFY)) return
         if (homeFacet.value == chip) return
         homeFacet.value = chip
         loadHome()
     }
 
     /** [refreshHome]'s Spotify half: the rows, read again rather than carried on. */
-    private suspend fun refreshSpotifyHome(identity: String?, generation: Long) {
+    private suspend fun refreshSpotifyHome(
+        identity: String?,
+        generation: Long,
+        replace: Boolean = true,
+    ) {
         val outcome = runCatching { SpotifyHomeSource.page(homeFacet.value) }.getOrNull() ?: return
         if (!isCurrentHomeLoad(identity, generation) || outcome.isEmpty) return
-        _homeHeader.value = outcome.header
-        publishHomeShelves(outcome.shelves, identity, generation, replace = true)
+        if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.SPOTIFY) {
+            _homeHeader.value = outcome.header
+        }
+        publishHomeShelves(outcome.shelves, identity, generation, replace = replace)
+    }
+
+    /** [refreshHome]'s Apple half: the personalised feed read again. */
+    private suspend fun refreshAppleHome(
+        identity: String?,
+        generation: Long,
+        replace: Boolean = true,
+    ) {
+        val outcome = AppleHomeSource.shelf().getOrNull() ?: return
+        if (!isCurrentHomeLoad(identity, generation) || outcome.items.isEmpty()) return
+        publishHomeShelves(listOf(outcome), identity, generation, replace = replace)
     }
 
     /**
@@ -2545,6 +2690,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         replace: Boolean = false,
     ) {
         val visible = enrichHomeShelves(shelves).withoutBlockedArtists()
+            .let { loaded ->
+                if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.ALL) {
+                    loaded.deduplicateRecommendationRows(_homeRaw.value)
+                } else {
+                    loaded
+                }
+            }
         // Enrichment may wait on bounded Apple lookups. A newer home load can
         // take over meanwhile; the older answer must not append stale shelves.
         if (!isCurrentHomeLoad(identity, generation)) return
@@ -2575,6 +2727,38 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Removes duplicate recommendation rows when the combined feed is used.
+     *
+     * Apple identity wins in Apple mode: two rows naming the same Apple
+     * catalogue id are one recommendation even when their provider ids
+     * differ. Without Apple mode, the provider's own id is the identity.
+     * Browsable cards have no recording identity and are left alone.
+     */
+    private fun List<HomeShelf>.deduplicateRecommendationRows(
+        existing: List<HomeShelf>,
+    ): List<HomeShelf> {
+        val seen = existing.flatMap { it.items }
+            .mapNotNull { it.recommendationKey() }
+            .toMutableSet()
+        return map { shelf ->
+            shelf.copy(
+                items = shelf.items.filter { item ->
+                    val key = item.recommendationKey() ?: return@filter true
+                    seen.add(key)
+                },
+            )
+        }.filter { it.items.isNotEmpty() }
+    }
+
+    private fun ShelfItem.recommendationKey(): String? {
+        if (AppSettings.appleRichModeEnabled) {
+            appleCatalogId?.takeIf { it.isNotBlank() }?.let { return "apple:$it" }
+        }
+        videoId?.takeIf { it.isNotBlank() }?.let { return "video:$it" }
+        return null
+    }
+
+    /**
      * Enriches song cards while the feed is being built. A shelf card has no
      * full [Song], so the lookup uses its title and credited artist and stores
      * only the resulting Apple catalogue id on the card.
@@ -2588,21 +2772,39 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     title = item.title,
                     artist = InnertubeParser.artistFromSubtitle(item.subtitle),
                     thumbnailUrl = item.thumbnailUrl,
+                    durationText = item.durationText,
+                    isExplicit = item.isExplicit,
+                    contentRating = item.contentRating,
+                    isrc = item.isrc,
+                    appleCatalogId = item.appleCatalogId,
+                    appleLookupError = item.appleLookupError,
                 )
             }
         }
         if (candidates.isEmpty()) return shelves
         val enriched = AppleEnrichment.enrich(candidates).associateBy { it.videoId }
-        return shelves.map { shelf ->
-            shelf.copy(
-                items = shelf.items.map { item ->
-                    val id = item.videoId
-                    if (id == null) item else item.copy(
-                        appleCatalogId = enriched[id]?.appleCatalogId,
-                        appleLookupError = enriched[id]?.appleLookupError,
-                    )
-                },
-            )
+        return shelves.mapNotNull { shelf ->
+            val items = shelf.items.mapNotNull { item ->
+                val id = item.videoId
+                if (id == null) return@mapNotNull item
+                val resolved = enriched[id] ?: return@mapNotNull item
+                // Apple mode is strict: a discovery row without an exact
+                // catalogue id is not allowed to fall through to a generic
+                // source. Dropping it is honest; showing it would silently
+                // change both the recording and the audio backend.
+                if (AppSettings.appleRichModeEnabled && resolved.appleCatalogId.isNullOrBlank()) {
+                    return@mapNotNull null
+                }
+                item.copy(
+                    appleCatalogId = resolved.appleCatalogId,
+                    appleLookupError = resolved.appleLookupError,
+                    durationText = resolved.durationText ?: item.durationText,
+                    isExplicit = resolved.isExplicit,
+                    contentRating = resolved.contentRating,
+                    isrc = resolved.isrc,
+                )
+            }
+            shelf.copy(items = items).takeIf { it.items.isNotEmpty() }
         }
     }
 
@@ -2693,9 +2895,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _homeLoadingMore.value = false
         // Spotify's rows are read rather than continued, so a refresh is the
         // whole of what it does — see [refreshSpotifyHome].
-        if (AppSettings.homeProvider.value == HomeProvider.SPOTIFY) {
+        if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.SPOTIFY) {
             _homeRecentlyPlayedLoading.value = false
             refreshSpotifyHome(identity, generation)
+            return@coroutineScope
+        }
+        if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.APPLE) {
+            _homeRecentlyPlayedLoading.value = false
+            refreshAppleHome(identity, generation)
             return@coroutineScope
         }
         val recent = if (_signedIn.value) async { YtMusicRepository.homeRecentlyPlayed() } else null
@@ -2717,6 +2924,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
         }?.onFailure {
             if (isCurrentHomeLoad(identity, generation)) _homeRecentlyPlayedLoading.value = false
+        }
+        if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.ALL) {
+            // YouTube's refresh replaced the page above. The other two feeds
+            // append to it and are de-duplicated by publishHomeShelves.
+            refreshSpotifyHome(identity, generation, replace = false)
+            refreshAppleHome(identity, generation, replace = false)
         }
     }
 
@@ -3144,10 +3357,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // query has been run before, otherwise the closest earlier
                 // one. Only fall back to a spinner with neither.
                 val exact = searchCache.get(key)
-                val cached = exact?.rows ?: prefixMatch(request.query, request.filter, request.source)
-                _results.value = cached?.let { UiState.Success(it.withoutBlockedArtists()) }
-                    ?: UiState.Loading
+                val exactUnavailable = exact != null && appleCatalogueMatchUnavailable(
+                    rows = exact.rows,
+                    appleModeEnabled = AppSettings.appleRichModeEnabled,
+                )
+                val prefix = if (exact == null) {
+                    prefixMatch(request.query, request.filter, request.source)
+                } else {
+                    null
+                }
+                val cached = when {
+                    exact != null && !exactUnavailable -> exact.rows
+                    prefix != null && !appleCatalogueMatchUnavailable(
+                            rows = prefix,
+                            appleModeEnabled = AppSettings.appleRichModeEnabled,
+                        ) -> prefix
+                    else -> null
+                }
+                _results.value = when {
+                    exactUnavailable -> UiState.Error(APPLE_CATALOGUE_MATCH_UNAVAILABLE)
+                    cached != null -> UiState.Success(cached.withoutBlockedArtists())
+                    else -> UiState.Loading
+                }
                 if (exact != null) {
+                    if (exactUnavailable) {
+                        // Drop the stale row. The next submit performs a fresh
+                        // catalogue lookup instead of reviving this answer.
+                        searchCache.remove(key)
+                        return@collectLatest
+                    }
                     searchSession = SearchSession(
                         key = key,
                         requestId = request.requestId,
@@ -3308,9 +3546,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     val merged = enrichSearchRows(
                         (current + page.rows).distinctBy(::searchResultKey),
                     ).withoutBlockedArtists()
-                    searchCache.put(session.key, SearchCacheEntry(merged, page.continuation))
-                    searchSession = session.copy(continuation = page.continuation)
-                    _results.value = UiState.Success(merged)
+                    if (appleCatalogueMatchUnavailable(
+                            rows = merged,
+                            appleModeEnabled = AppSettings.appleRichModeEnabled,
+                        )
+                    ) {
+                        searchCache.remove(session.key)
+                        searchSession = null
+                        _results.value = UiState.Error(APPLE_CATALOGUE_MATCH_UNAVAILABLE)
+                    } else {
+                        searchCache.put(session.key, SearchCacheEntry(merged, page.continuation))
+                        searchSession = session.copy(continuation = page.continuation)
+                        _results.value = UiState.Success(merged)
+                    }
                 }
                 _searchLoadingMore.value = false
             }
@@ -3342,9 +3590,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     val merged = enrichSearchRows(
                         (current + page.rows).distinctBy(::searchResultKey),
                     ).withoutBlockedArtists()
-                    searchCache.put(session.key, SearchCacheEntry(merged, null, page.nextOffset))
-                    searchSession = session.copy(nextOffset = page.nextOffset)
-                    _results.value = UiState.Success(merged)
+                    if (appleCatalogueMatchUnavailable(
+                            rows = merged,
+                            appleModeEnabled = AppSettings.appleRichModeEnabled,
+                        )
+                    ) {
+                        searchCache.remove(session.key)
+                        searchSession = null
+                        _results.value = UiState.Error(APPLE_CATALOGUE_MATCH_UNAVAILABLE)
+                    } else {
+                        searchCache.put(session.key, SearchCacheEntry(merged, null, page.nextOffset))
+                        searchSession = session.copy(nextOffset = page.nextOffset)
+                        _results.value = UiState.Success(merged)
+                    }
                 }
                 _searchLoadingMore.value = false
             }
@@ -3461,6 +3719,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     ): UiState<List<SearchResult>> {
         val clean = enrichSearchRows(rows).withoutBlockedArtists()
         if (clean.isEmpty()) return UiState.Error(text(R.string.no_results))
+        // Apple mode is strict about the recording, not merely about the
+        // provider it came from. A discovery row without an exact catalogue id
+        // must not be drawn as if it were playable and then fall back to a
+        // title-matched YouTube recording later.
+        if (appleCatalogueMatchUnavailable(
+                rows = clean,
+                appleModeEnabled = AppSettings.appleRichModeEnabled,
+            )
+        ) {
+            return UiState.Error(APPLE_CATALOGUE_MATCH_UNAVAILABLE)
+        }
         searchCache.put(key, SearchCacheEntry(clean, continuation, nextOffset))
         searchSession = SearchSession(
             key = key,
@@ -4895,7 +5164,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * Unlocks at 16 fav tracks+artists total, or 10 artists alone.
      */
     val flowStatus: StateFlow<FlowStatus> =
-        combine(_library, likeStatuses, AppSettings.homeProvider) { library, likes, provider ->
+        combine(_library, likeStatuses, AppSettings.recommendationAlgorithm) { library, likes, algorithm ->
             val favTracks = likes.count { it.value == LikeStatus.LIKE }
             val shelves = (library as? UiState.Success)?.data?.shelves.orEmpty()
             val artists = shelves.firstOrNull { it.title.equals("Artists", true) }?.items?.size ?: 0
@@ -4905,7 +5174,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // the Spotify catalogue has a whole library over there, and the
             // YouTube counts this used to read are zero — which is what put
             // "Like 16 more songs" in front of somebody with thousands.
-            val spotify = provider == HomeProvider.SPOTIFY
+            val spotify = algorithm.includes(RecommendationAlgorithm.SPOTIFY)
             FlowStatus(
                 unlocked = spotify || FlowRules.isUnlocked(favTracks, favArtists),
                 favTrackCount = favTracks,
@@ -4990,7 +5259,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // service the listener chose is whose taste it should reflect. Nothing
         // else changes — the engine, its weights, the skip and ban learning and
         // the hourly refresh are all the same; only the seed pool is.
-        if (AppSettings.homeProvider.value == HomeProvider.SPOTIFY) {
+        if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.SPOTIFY) {
             val seeds = runCatching { SpotifyHomeSource.flowSeeds() }.getOrNull()
             if (seeds == null || seeds.isEmpty) {
                 // Deliberately *not* falling back to the YouTube seeds.
@@ -5019,6 +5288,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 },
             )
         }
+        if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.APPLE) {
+            val seeds = AppleHomeSource.tracks(FLOW_EXPANSION * 2).getOrNull().orEmpty()
+            if (seeds.isEmpty()) return emptyList()
+            return flowQueueFrom(
+                FlowEngine.SeedPool(
+                    favorites = seeds,
+                    history = emptyList(),
+                    quickPicks = emptyList(),
+                    moodPool = emptyList(),
+                ),
+                limit,
+                relatedTracks = {
+                    AppleHomeSource.tracks(FLOW_EXPANSION).getOrNull().orEmpty()
+                },
+            )
+        }
         val lib = (_library.value as? UiState.Success)?.data
         val favorites = (lib?.likedSongs.orEmpty() + lib?.librarySongs.orEmpty())
             .withoutBlockedArtists()
@@ -5033,11 +5318,50 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // songs the mood is made of. The unfiltered mix has no station and
         // asks for none.
         val moodPool = fetchFlowMoodPool(FlowStore.config.mood)
+        if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.ALL) {
+            val spotifySeeds = runCatching { SpotifyHomeSource.flowSeeds() }.getOrNull()
+            val appleSeeds = AppleHomeSource.tracks(FLOW_EXPANSION * 2).getOrNull().orEmpty()
+            val allFavorites = interleaveRecommendationGroups(
+                listOf(favorites, spotifySeeds?.top.orEmpty(), appleSeeds),
+                FLOW_EXPANSION * 2,
+            ).distinctBy { it.videoId }
+            val allHistory = interleaveRecommendationGroups(
+                listOf(history, spotifySeeds?.recent.orEmpty()),
+                FLOW_EXPANSION * 2,
+            ).distinctBy { it.videoId }
+            return flowQueueFrom(
+                FlowEngine.SeedPool(allFavorites, allHistory, quickPicks, moodPool),
+                limit,
+                relatedTracks = { seed ->
+                    val youtube = YtMusicRepository.radio(seed.videoId).getOrNull().orEmpty()
+                    val spotify = runCatching {
+                        com.music.bitchord.data.spotify.SpotifyAlgorithm.more(seed, FLOW_EXPANSION)
+                    }.getOrDefault(emptyList())
+                    val apple = AppleHomeSource.tracks(FLOW_EXPANSION).getOrNull().orEmpty()
+                    interleaveRecommendationGroups(
+                        listOf(youtube, spotify, apple),
+                        FLOW_EXPANSION,
+                    ).distinctBy { it.videoId }
+                },
+            )
+        }
         return flowQueueFrom(
             FlowEngine.SeedPool(favorites, history, quickPicks, moodPool),
             limit,
         )
     }
+
+    /** Merges recommendation feeds in turns, so every feed contributes. */
+    private fun interleaveRecommendationGroups(
+        groups: List<List<Song>>,
+        limit: Int,
+    ): List<Song> = buildList {
+        var index = 0
+        while (size < limit && groups.any { it.size > index }) {
+            groups.forEach { group -> group.getOrNull(index)?.let(::add) }
+            index++
+        }
+    }.take(limit)
 
     /**
      * One Flow mix from a seed pool.
@@ -5065,7 +5389,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             genreOf = ::flowGenreOf,
             relatedTracks = relatedTracks,
         ).withoutBlockedArtists().distinctBy { it.videoId }.take(limit)
-        return AppleEnrichment.enrich(built)
+        val enriched = AppleEnrichment.enrich(built)
+        return if (AppSettings.appleRichModeEnabled) {
+            enriched.filter { !it.appleCatalogId.isNullOrBlank() }
+        } else {
+            enriched
+        }
     }
 
     /**
@@ -5217,13 +5546,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     // The top-up is the provider's algorithm as well: a mix
                     // that starts as Spotify's and grows through YouTube's
                     // radio is half Spotify and half YouTube.
-                    val related = if (AppSettings.homeProvider.value == HomeProvider.SPOTIFY) {
-                        runCatching {
+                    val algorithm = AppSettings.recommendationAlgorithm.value
+                    val related = when (algorithm) {
+                        RecommendationAlgorithm.SPOTIFY -> runCatching {
                             com.music.bitchord.data.spotify.SpotifyAlgorithm.more(seed, FLOW_EXPANSION)
                         }.getOrDefault(emptyList())
-                    } else {
-                        YtMusicRepository.radio(seed.videoId).getOrNull().orEmpty()
+                        RecommendationAlgorithm.APPLE ->
+                            AppleHomeSource.tracks(FLOW_EXPANSION).getOrNull().orEmpty()
+                        RecommendationAlgorithm.YOUTUBE ->
+                            YtMusicRepository.radio(seed.videoId).getOrNull().orEmpty()
+                        RecommendationAlgorithm.ALL -> {
+                            val youtube = YtMusicRepository.radio(seed.videoId).getOrNull().orEmpty()
+                            val spotify = runCatching {
+                                com.music.bitchord.data.spotify.SpotifyAlgorithm.more(seed, FLOW_EXPANSION)
+                            }.getOrDefault(emptyList())
+                            val apple = AppleHomeSource.tracks(FLOW_EXPANSION).getOrNull().orEmpty()
+                            interleaveRecommendationGroups(
+                                listOf(youtube, spotify, apple),
+                                FLOW_EXPANSION,
+                            ).distinctBy { it.videoId }
+                        }
                     }
+                    val eligible = related
                         .withoutBlockedArtists()
                         .filterNot { c ->
                             FlowEngine.isExcluded(
@@ -5231,7 +5575,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                 FlowStore.skipCounts.value, FlowStore.config.tuner, ::flowGenreOf,
                             )
                         }
-                    val extra = com.music.bitchord.playback.QueueBuilder.extend(out, related, limit)
+                    val strictRelated = if (AppSettings.appleRichModeEnabled) {
+                        AppleEnrichment.enrich(eligible)
+                            .filter { !it.appleCatalogId.isNullOrBlank() }
+                    } else {
+                        eligible
+                    }
+                    val extra = com.music.bitchord.playback.QueueBuilder.extend(out, strictRelated, limit)
                     out += FlowEngine.tagFlow(extra).filter { c -> out.none { it.videoId == c.videoId } }
                     FlowStore.advanceSeedCursor()
                 }
