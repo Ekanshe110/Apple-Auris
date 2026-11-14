@@ -40,4 +40,47 @@ class ExclusiveVolumeStateTest {
         assertFalse(featureVolumeReadbackProvesWritable(100, null))
         assertFalse(featureVolumeReadbackProvesWritable(null, 100))
     }
+
+    @Test
+    fun `partial Feature Unit channel writes do not report success`() {
+        assertTrue(featureVolumeWritesSucceeded(listOf(true, true)))
+        assertFalse(featureVolumeWritesSucceeded(listOf(true, false)))
+        assertFalse(featureVolumeWritesSucceeded(listOf(false)))
+        assertFalse(featureVolumeWritesSucceeded(emptyList()))
+    }
+
+    @Test
+    fun `software gain stays muted until hardware unity is established`() {
+        assertEquals(
+            0f,
+            exclusiveSoftwareGainAfterHardwareUnity(
+                unityEstablished = false,
+                listeningGain = 0.5f,
+                appGain = 0.5f,
+            ),
+            1e-6f,
+        )
+        assertEquals(
+            exclusiveSoftwareGain(0.5f, 0.5f),
+            exclusiveSoftwareGainAfterHardwareUnity(
+                unityEstablished = true,
+                listeningGain = 0.5f,
+                appGain = 0.5f,
+            ),
+            1e-6f,
+        )
+    }
+
+    @Test
+    fun `only explicit volume changes during an active session are remembered`() {
+        assertTrue(
+            shouldRememberDacGain(explicitVolumeBroadcast = true, exclusiveSessionActive = true)
+        )
+        assertFalse(
+            shouldRememberDacGain(explicitVolumeBroadcast = false, exclusiveSessionActive = true)
+        )
+        assertFalse(
+            shouldRememberDacGain(explicitVolumeBroadcast = true, exclusiveSessionActive = false)
+        )
+    }
 }

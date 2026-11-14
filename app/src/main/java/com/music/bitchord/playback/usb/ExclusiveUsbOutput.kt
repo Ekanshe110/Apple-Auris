@@ -43,6 +43,8 @@ class ExclusiveUsbOutput(
     @Volatile private var active = false
     @Volatile private var clockMatched = false
     @Volatile private var hardwareVolume = false
+    /** Hardware unity has not been proven after a failed volume write. */
+    @Volatile private var hardwareUnityPending = false
     @Volatile private var configuredRateHz = 0
     @Volatile private var configuredChannelCount = 0
     @Volatile private var listeningGain = DEFAULT_ATTACH_GAIN
@@ -109,7 +111,7 @@ class ExclusiveUsbOutput(
             if (intent?.action != VOLUME_CHANGED_ACTION) return
             val streamType = intent.getIntExtra(EXTRA_VOLUME_STREAM_TYPE, AudioManager.STREAM_MUSIC)
             if (streamType != AudioManager.STREAM_MUSIC) return
-            syncListeningGain()
+            syncListeningGainFromReceiver()
         }
     }
 
@@ -155,18 +157,29 @@ class ExclusiveUsbOutput(
     /**
      * Software (PCM-scaled) volume instead of the DAC's hardware Feature Unit.
      * Switching to software parks the hardware level at 0 dB first so the two
-     * attenuations never stack. Switching back takes effect at the next start.
+     * attenuations never stack. If unity cannot be established, software gain
+     * stays muted. Switching back takes effect at the next start.
      */
     fun setForceSoftwareVolume(value: Boolean) {
         synchronized(lock) {
             if (forceSoftwareVolume == value) return
             forceSoftwareVolume = value
             if (value && active && hardwareVolume) {
-                runCatching { featureVolume?.setNormalized(1f) }
+                val unityEstablished = featureVolume?.setNormalized(1f) == true
                 hardwareVolume = false
+                hardwareUnityPending = !unityEstablished
                 lastAppliedListening = Float.NaN
-                applyVolumeLocked()
-                Log.i(TAG, "volume forced to software; Feature Unit parked at 0 dB")
+                applyVolumeLocked(unityAlreadyAttempted = true)
+                if (unityEstablished) {
+                    Log.i(TAG, "volume forced to software; Feature Unit parked at 0 dB")
+                } else {
+                    Log.w(TAG, "volume forced to software; Feature Unit unity could not be established")
+                }
+            } else if (value && active && hardwareUnityPending) {
+                // A previous Feature Unit write failed. Retry unity before
+                // allowing any software attenuation to reach the PCM.
+                lastAppliedListening = Float.NaN
+                applyVolumeLocked(unityAlreadyAttempted = false)
             }
         }
     }
@@ -189,7 +202,8 @@ class ExclusiveUsbOutput(
 
     /**
      * PCM software gain for exclusive output. 1 when a verified Feature Unit
-     * owns listening level; otherwise STREAM_MUSIC × Media3 volume.
+     * owns listening level; otherwise the perceptual STREAM_MUSIC gain times
+     * independent app gain, or zero while hardware unity is unproven.
      */
     fun softwareGain(): Float = if (!active) 1f else softwareGainValue
 
@@ -273,17 +287,28 @@ class ExclusiveUsbOutput(
         }
     }
 
+    /**
+     * Synchronizes the system listening level without remembering it.
+     *
+     * Configure and reconfigure read STREAM_MUSIC to establish the attach
+     * level, but that read is not evidence that the listener chose a DAC
+     * level and must not become the remembered fallback.
+     */
     fun syncListeningGain() {
+        syncListeningGainInternal(rememberChosenLevel = false)
+    }
+
+    private fun syncListeningGainFromReceiver() {
+        syncListeningGainInternal(rememberChosenLevel = true)
+    }
+
+    private fun syncListeningGainInternal(rememberChosenLevel: Boolean) {
         val stream = readStreamMusicGain() ?: return
         // While the attach-time 100% pin is held off with the remembered
         // level, keep ignoring pinned max readings. The next real sub-max
         // change (a volume key press) ends the hold and applies normally.
         if (ignoreStreamMusicMax && stream >= ATTACH_MAX_PIN_GAIN) return
         if (stream < ATTACH_MAX_PIN_GAIN) ignoreStreamMusicMax = false
-        // Only a level chosen while this DAC session is active belongs to the
-        // DAC. A phone-speaker or Bluetooth level read at app start must not
-        // become the next exclusive session's fallback level.
-        if (active) rememberStreamGain(stream)
         val next = stream
         if (lastAppliedListening.isFinite() &&
             kotlin.math.abs(next - listeningGain) < 1e-4f
@@ -291,6 +316,11 @@ class ExclusiveUsbOutput(
             listeningGain = next
             return
         }
+        // Only an explicit changed broadcast while this DAC session is active
+        // belongs to the DAC. A phone-speaker or Bluetooth level read at app
+        // start, or a duplicate attach broadcast, must not become the next
+        // exclusive session's fallback level.
+        if (shouldRememberDacGain(rememberChosenLevel, active)) rememberStreamGain(next)
         synchronized(lock) {
             listeningGain = next
             applyVolumeLocked()
@@ -701,10 +731,12 @@ class ExclusiveUsbOutput(
             val attached = volumeControl.attach()
             featureVolumeAttached = attached
             hardwareVolume = attached
+            hardwareUnityPending = false
         } else {
             featureVolume = null
             featureVolumeAttached = false
             hardwareVolume = false
+            hardwareUnityPending = false
         }
         Log.i(
             TAG,
@@ -792,7 +824,6 @@ class ExclusiveUsbOutput(
 
     private fun listeningGainForDac(): Float {
         val stream = readStreamMusicGain() ?: return listeningGain
-        if (active) rememberStreamGain(stream)
         val fallback = when {
             lastNonMaxListeningGain.isFinite() -> lastNonMaxListeningGain
             AppSettings.playerVolume.value < ATTACH_MAX_PIN_GAIN ->
@@ -828,20 +859,40 @@ class ExclusiveUsbOutput(
      * slider twice. At half volume that became roughly -40 dB instead of
      * -31 dB, which felt like enormous jumps around the bottom of the range.
      */
-    private fun applyVolumeLocked() {
+    private fun applyVolumeLocked(unityAlreadyAttempted: Boolean = false) {
         val listening = listeningGain.coerceIn(0f, 1f)
         val unchanged = lastAppliedListening.isFinite() &&
             kotlin.math.abs(listening - lastAppliedListening) < 1e-4f
         lastAppliedListening = listening
+        var unityAttempted = unityAlreadyAttempted
         if (hardwareVolume && !unchanged && featureVolume?.setNormalized(listening) != true) {
             hardwareVolume = false
-            Log.w(TAG, "Feature Unit SET_CUR failed; falling back to perceptual software gain")
+            // The failed write may have left an unknown attenuation on the DAC.
+            // Park it at unity before software gain can be applied.
+            val unityEstablished = featureVolume?.setNormalized(1f) == true
+            unityAttempted = true
+            hardwareUnityPending = !unityEstablished
+            if (unityEstablished) {
+                Log.w(TAG, "Feature Unit SET_CUR failed; parked at unity and falling back to software gain")
+            } else {
+                Log.w(TAG, "Feature Unit SET_CUR failed and unity could not be established; software gain muted")
+            }
+        }
+        if (!hardwareVolume && hardwareUnityPending && !unityAttempted &&
+            featureVolume?.setNormalized(1f) == true
+        ) {
+            hardwareUnityPending = false
+            Log.i(TAG, "Feature Unit unity established; software gain resumed")
         }
         val app = pendingVolume.coerceIn(0f, 1f)
         softwareGainValue = if (hardwareVolume) {
             app
         } else {
-            exclusiveSoftwareGain(listening, app)
+            exclusiveSoftwareGainAfterHardwareUnity(
+                unityEstablished = !hardwareUnityPending,
+                listeningGain = listening,
+                appGain = app,
+            )
         }
     }
 
@@ -982,6 +1033,7 @@ class ExclusiveUsbOutput(
         volumeProbed = false
         ignoreStreamMusicMax = false
         hardwareVolume = false
+        hardwareUnityPending = false
         clockMatched = false
         clockReadbackSupported = false
         configuredRateHz = 0
@@ -1131,6 +1183,29 @@ internal fun attachMaxPinFallbackGain(streamGain: Float, rememberedGain: Float):
 /** Effective PCM gain when the DAC cannot own the listening level itself. */
 internal fun exclusiveSoftwareGain(listeningGain: Float, appGain: Float): Float =
     UacFeatureVolume.perceptualLinearGain(listeningGain) * appGain.coerceIn(0f, 1f)
+
+/**
+ * Software gain after a hardware volume failure.
+ *
+ * Unity must be proven before software attenuation is safe. Otherwise the DAC
+ * may still be applying an unknown attenuation, which would stack with the
+ * software gain.
+ */
+internal fun exclusiveSoftwareGainAfterHardwareUnity(
+    unityEstablished: Boolean,
+    listeningGain: Float,
+    appGain: Float,
+): Float = if (unityEstablished) {
+    exclusiveSoftwareGain(listeningGain, appGain)
+} else {
+    0f
+}
+
+/** Whether an explicit system-volume change is a chosen DAC level. */
+internal fun shouldRememberDacGain(
+    explicitVolumeBroadcast: Boolean,
+    exclusiveSessionActive: Boolean,
+): Boolean = explicitVolumeBroadcast && exclusiveSessionActive
 
 /** Raw readings at/above this are the attach-time pin, not a chosen level. */
 private const val ATTACH_MAX_PIN_GAIN = 0.999f

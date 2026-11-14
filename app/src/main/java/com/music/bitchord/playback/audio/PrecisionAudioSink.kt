@@ -521,10 +521,10 @@ class PrecisionAudioSink(
             return ExclusiveOutcome.FALL_THROUGH
         }
         if (session.isPaused()) return ExclusiveOutcome.BACKPRESSURE
-        // The exclusive session reads STREAM_MUSIC itself and applies that
-        // listening level once. AppSettings.playerVolume mirrors the same
-        // system value, so sending it here as well would square the slider
-        // and turn normal steps into huge jumps.
+        // The exclusive session reads STREAM_MUSIC itself for the listening
+        // level. Media3's volume is independent app automation gain and is
+        // passed separately by [setVolume], so the two gains do not square
+        // the listener's system slider.
         val encoding = inputPcmEncoding ?: return ExclusiveOutcome.FALL_THROUGH
         if (session.write(buffer, presentationTimeUs, isFloatBuffer = encoding == PcmEncoding.PCM_FLOAT)) {
             exclusiveEnded = false
@@ -933,16 +933,12 @@ class PrecisionAudioSink(
     }
 
     override fun setVolume(volume: Float) {
-        // While bit-perfect is on, the listener's own level is the only gain
-        // in the path: this one is the crossfade's, and the two must not
-        // stack. The platform track stays at unity and the DAC's own control
-        // takes the listener's level; see [tryExclusiveBuffer] and the
-        // software gain in [handleBuffer].
+        // While bit-perfect is on, this is independent app automation gain
+        // (crossfade or ducking), not the listener's system level. The
+        // exclusive session applies it separately from its STREAM_MUSIC
+        // listening gain, while the platform track stays at unity.
         if (AppSettings.bitPerfect.value) {
-            // Crossfade/duck gains are independent app gain. Bit-perfect keeps
-            // the PCM untouched, so this branch is unity rather than another
-            // copy of the listener's system level.
-            if (isAudible()) runCatching { exclusiveUsb?.setVolume(1f) }
+            if (isAudible()) runCatching { exclusiveUsb?.setVolume(volume) }
             super.setVolume(1f)
             return
         }

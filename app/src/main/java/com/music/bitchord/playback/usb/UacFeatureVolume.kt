@@ -18,6 +18,10 @@ import kotlin.math.roundToInt
 internal fun featureVolumeReadbackProvesWritable(original: Int?, updated: Int?): Boolean =
     original != null && updated != null && updated != original
 
+/** Whether every verified Feature Unit channel accepted its volume write. */
+internal fun featureVolumeWritesSucceeded(results: List<Boolean>): Boolean =
+    results.isNotEmpty() && results.all { it }
+
 class UacFeatureVolume(
     private val connection: UsbDeviceConnection,
     private val controlInterfaceId: Int,
@@ -63,12 +67,13 @@ class UacFeatureVolume(
         if (!available || featureUnitId == 0) return false
         val clamped = volume.coerceIn(0f, 1f)
         val coded = encodedVolume(clamped, minRaw, maxRaw, resRaw)
-        var ok = false
-        for (channel in channels) {
-            if (writeVolume(featureUnitId, channel, coded)) ok = true
+        val volumeWrites = channels.map { channel ->
+            writeVolume(featureUnitId, channel, coded)
         }
         writeMute(featureUnitId, clamped <= 0f)
-        return ok
+        // A partial write cannot establish unity. Every verified channel must
+        // accept the requested level before the caller may trust the result.
+        return featureVolumeWritesSucceeded(volumeWrites)
     }
 
     private fun discoverChannels(unitId: Int): IntArray {
