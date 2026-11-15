@@ -28,9 +28,13 @@ jobs:
         with:
           java-version: "17"
           distribution: "temurin"
-          cache: gradle
 
       - uses: gradle/actions/setup-gradle@v4
+      - name: Cache the Gradle wrapper
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-8.11.1-${{ runner.os }}
 
       - name: Cache the Android NDK
         uses: actions/cache@v4
@@ -88,9 +92,13 @@ jobs:
         with:
           java-version: "21"
           distribution: "temurin"
-          cache: gradle
 
       - uses: gradle/actions/setup-gradle@v4
+      - name: Cache the Gradle wrapper
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-8.11.1-${{ runner.os }}
 
       - name: Write local.properties
         run: |
