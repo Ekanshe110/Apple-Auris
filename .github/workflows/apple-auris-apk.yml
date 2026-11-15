@@ -1,16 +1,11 @@
 name: Apple Auris APK
 
+# Built once per accepted batch, on purpose: a signed APK per micro-commit
+# burns a full Android build without producing a new version. Unit tests and
+# the release compile still run on every push; the signed artifact is produced
+# here only when it is actually going to be installed.
 on:
   workflow_dispatch:
-  push:
-    branches: [feature/automix-core-v2]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - "Banner.png"
-      - "BANNER.png"
-      - "Logo.png"
-      - "LOGO.png"
 
 permissions:
   contents: write
