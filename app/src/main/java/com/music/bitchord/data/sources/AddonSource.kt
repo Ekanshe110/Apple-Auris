@@ -284,6 +284,7 @@ class AddonSource(
                         } else {
                             ModuleSource.qualityTier("${track.audioQuality} ${track.format}")
                         },
+                        atmosAvailable = track.atmos == true,
                         // Apple catalogue rows carry Apple's own song id. It is
                         // also the addon's track id for search results, but the
                         // library contract keeps catalog and stream ids apart;
@@ -337,6 +338,7 @@ class AddonSource(
                         } else {
                             ModuleSource.qualityTier("${track.audioQuality} ${track.format}")
                         },
+                        atmosAvailable = track.atmos == true,
                         appleCatalogId = track.id.takeIf {
                             SourceRegistry.config(config.id)?.catalogRole ==
                                 com.music.bitchord.data.sources.SourceCatalogRole.APPLE_MUSIC

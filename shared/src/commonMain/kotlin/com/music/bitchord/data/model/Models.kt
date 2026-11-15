@@ -128,6 +128,13 @@ data class Song(    val videoId: String,
      * the track played as a 128kbps MP3.
      */
     val sourceQuality: String? = null,
+    /**
+     * Whether the catalogue advertises a Dolby Atmos rendition for this track.
+     *
+     * Comes straight from catalogue metadata; the app never probes the server
+     * to learn it. Default false keeps existing rows and persistence compatible.
+     */
+    val atmosAvailable: Boolean = false,
     /** Explicit-content state from the catalogue; null when that source does not say. */
     val isExplicit: Boolean? = null,
     /**
@@ -210,6 +217,7 @@ data class Song(    val videoId: String,
         localDateAddedSeconds: Long? = null,
         localDateModifiedSeconds: Long? = null,
         sourceQuality: String? = null,
+        atmosAvailable: Boolean = false,
         isExplicit: Boolean? = null,
         playbackSource: String? = null,
         playbackSourceType: PlaybackSourceType? = null,
@@ -240,6 +248,7 @@ data class Song(    val videoId: String,
         localDateAddedSeconds = localDateAddedSeconds,
         localDateModifiedSeconds = localDateModifiedSeconds,
         sourceQuality = sourceQuality,
+        atmosAvailable = atmosAvailable,
         isExplicit = isExplicit,
         contentRating = contentRating,
         isrc = isrc,
