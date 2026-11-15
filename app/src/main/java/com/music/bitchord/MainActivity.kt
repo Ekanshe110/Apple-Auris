@@ -1951,10 +1951,6 @@ private fun BitChordApp(
 
     val playFrom: (List<Song>, Int, QueueSource) -> Unit = playFrom@{ allSongs, allIndex, source ->
         val selectedSong = allSongs.getOrNull(allIndex)
-        // The tapped row is the one action that cannot continue without an
-        // exact Apple identity. Other unresolved rows in the same collection
-        // are filtered below; one bad neighbour must not cancel the album.
-        if (selectedSong != null && rejectUnavailableAppleSongs(listOf(selectedSong))) return@playFrom
         // A Spotify page lists songs it has not found on YouTube Music yet (or
         // never will); those can't be queued, so play the rest in their order.
         if (selectedSong?.isUnresolvedSpotify == true) return@playFrom
@@ -1968,7 +1964,18 @@ private fun BitChordApp(
                 Toast.LENGTH_LONG,
             ).show()
         }
-        val index = songs.indexOf(selectedSong).coerceAtLeast(0)
+        // The tapped row may have no exact Apple identity while the rows around it
+        // do. Start at the next playable row in the same order instead of refusing
+        // the album; the aggregate notice above already says why it was skipped.
+        val startAt = if (selectedSong != null && songs.contains(selectedSong)) {
+            songs.indexOf(selectedSong)
+        } else {
+            val playableIds = songs.mapTo(HashSet()) { it.videoId }
+            val nextPlayable = allSongs.drop(allIndex).firstOrNull { it.videoId in playableIds }
+                ?: return@playFrom
+            songs.indexOfFirst { it.videoId == nextPlayable.videoId }
+        }
+        val index = startAt.coerceAtLeast(0)
         playRequestGeneration++
         activeRadioSeed = null
         scope.launch {
