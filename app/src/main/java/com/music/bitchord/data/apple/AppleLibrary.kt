@@ -184,5 +184,6 @@ fun AddonLibraryItem.toSong(configId: String): Song? {
         },
         contentRating = normalizedRating,
         isrc = isrc?.trim()?.takeIf { it.isNotEmpty() },
+        atmosAvailable = atmos == true,
     )
 }

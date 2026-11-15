@@ -240,6 +240,8 @@ data class AddonLibraryItem(
     @SerialName("explicit") val explicit: Boolean? = null,
     /** ISRC naming this exact recording, when the catalogue published one. */
     @SerialName("isrc") val isrc: String? = null,
+    /** Catalogue says an Atmos mix exists; absent when it has not said. */
+    @SerialName("atmos") val atmos: Boolean? = null,
 ) {
     val durationSec: Int? get() = duration?.takeIf { it > 0 }?.toInt()
     val artwork: String? get() = artworkURL.ifBlank { null }
