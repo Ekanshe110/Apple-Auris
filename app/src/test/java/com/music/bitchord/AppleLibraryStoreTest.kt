@@ -233,7 +233,7 @@ class AppleLibraryStoreTest {
     }
 
     @Test
-    fun `the visible open scope is not evicted`() {
+    fun `most recently used scope survives an insert that overflows the cap`() {
         val config = sourceConfig(id = "test")
         val scopes = (1..16).map { i ->
             AppleLibraryStore.scope(
@@ -243,7 +243,9 @@ class AppleLibraryStoreTest {
                 dispatcher = Dispatchers.Unconfined,
             )
         }
-        AppleLibraryStore.markVisible(scopes[0].key)
+        // Touch pl.1 so it becomes the most recently used scope.
+        assertSame(scopes[0], scopeBy(config, "pl.1"))
+        val mostRecent = scopes[0]
 
         AppleLibraryStore.scope(
             config,
@@ -251,12 +253,11 @@ class AppleLibraryStoreTest {
             "pl.17",
             dispatcher = Dispatchers.Unconfined,
         )
-        // pl.2 is the eldest non-visible scope and is evicted.
+        // pl.2 is now the eldest scope and is evicted.
         assertTrue(scopes[1].job.isCancelled)
-        // The visible scope survives.
-        assertFalse(scopes[0].job.isCancelled)
-        assertSame(scopes[0], scopeBy(config, "pl.1"))
-        AppleLibraryStore.unmarkVisible(scopes[0].key)
+        // The most recently used scope survives.
+        assertFalse(mostRecent.job.isCancelled)
+        assertSame(mostRecent, scopeBy(config, "pl.1"))
     }
 
     @Test

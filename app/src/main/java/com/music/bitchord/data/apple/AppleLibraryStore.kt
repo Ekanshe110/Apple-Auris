@@ -331,8 +331,6 @@ object AppleLibraryStore {
     // is not a suspend function, so a coroutine Mutex cannot be used here.
     private val scopeLock = ReentrantLock()
     private val scopes = LinkedHashMap<String, AppleLibraryScope>(MAX_LIBRARY_SCOPES, 0.75f, true)
-    /** Scope keys currently on screen; never evicted while another candidate exists. */
-    private val visibleScopes = mutableSetOf<String>()
 
     /** The one repository for this addon, reused for the whole session. */
     fun repository(config: SourceConfig): AppleLibraryRepository =
@@ -371,33 +369,12 @@ object AppleLibraryStore {
         }
     }
 
-    /** Marks a scope as currently visible/open so it is not evicted. */
-    internal fun markVisible(key: AppleLibraryScopeKey) {
-        scopeLock.lock()
-        try {
-            visibleScopes.add(key.cacheKey)
-        } finally {
-            scopeLock.unlock()
-        }
-    }
-
-    /** Clears the visible mark for a scope. */
-    internal fun unmarkVisible(key: AppleLibraryScopeKey) {
-        scopeLock.lock()
-        try {
-            visibleScopes.remove(key.cacheKey)
-        } finally {
-            scopeLock.unlock()
-        }
-    }
-
     private fun evictIfNeededLocked(excludedKey: String) {
         while (scopes.size >= MAX_LIBRARY_SCOPES) {
-            val victimKey = scopes.keys.firstOrNull { it != excludedKey && it !in visibleScopes }
+            val victimKey = scopes.keys.firstOrNull { it != excludedKey }
             if (victimKey == null) return
             val victim = scopes.remove(victimKey)
             victim?.cancel()
-            visibleScopes.remove(victimKey)
         }
     }
 
@@ -407,7 +384,6 @@ object AppleLibraryStore {
         try {
             scopes.values.forEach { it.cancel() }
             scopes.clear()
-            visibleScopes.clear()
         } finally {
             scopeLock.unlock()
         }
