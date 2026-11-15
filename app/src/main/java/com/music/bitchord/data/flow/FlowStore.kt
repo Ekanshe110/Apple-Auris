@@ -100,7 +100,13 @@ object FlowStore {
         songs: List<Song>,
         algorithm: RecommendationAlgorithm,
     ) {
-        if (!this::prefs.isInitialized || songs.isEmpty()) return
+        if (!this::prefs.isInitialized) return
+        // An empty build is an empty mix. Keeping the previous snapshot would
+        // restore yesterday's mix after today's build published nothing.
+        if (songs.isEmpty()) {
+            clearSnapshot()
+            return
+        }
         prefs.edit()
             .putString(KEY_FLOW_SNAPSHOT, encodeFlowSnapshot(songs))
             .putLong(KEY_FLOW_BUILT_AT, System.currentTimeMillis())

@@ -90,6 +90,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.channels.BufferOverflow
@@ -2745,7 +2747,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _homePendingShelves.value = 0
         _homeRecentlyPlayedLoading.value = false
         viewModelScope.launch {
-            val stages = stageAllHomeSources()
+            val stages = try {
+                stageAllHomeSources()
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (failure: Exception) {
+                if (!isCurrentHomeLoad(identity, generation)) return@launch
+                _home.value = UiState.Error(failure.friendly())
+                return@launch
+            }
             if (!isCurrentHomeLoad(identity, generation)) return@launch
             publishAllHomeStages(stages, identity, generation, replace = true)
         }
@@ -2853,11 +2863,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     ) {
         // Spotify owns the header even in ALL. Preserve the old one while the
         // new read is in flight, then replace it when Spotify answers.
+        if (!isCurrentHomeLoad(identity, generation)) return
         stages.firstOrNull { it.scope == HOME_SCOPE_SPOTIFY }?.header?.let {
             _homeHeader.value = it
         }
         var visible = false
-        stages.forEachIndexed { index, stage ->
+        var replaced = false
+        stages.forEach { stage ->
+            // A newer load may have taken over while this one waited on a
+            // provider. The older answer must not append to it.
+            if (!isCurrentHomeLoad(identity, generation)) return
             if (stage.scope == HOME_SCOPE_YOUTUBE) {
                 homeContinuation = stage.continuation
             }
@@ -2865,11 +2880,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 shelves = stage.shelves,
                 identity = identity,
                 generation = generation,
-                replace = replace && index == 0,
+                // The first provider that actually answers replaces the old
+                // feed; the rest add to it. A provider that fails leaves the
+                // page the listener already had.
+                replace = replace && !replaced,
                 scope = stage.scope,
             )
             visible = visible || added
+            if (added) replaced = true
         }
+        if (!isCurrentHomeLoad(identity, generation)) return
         _homeSourceEvidence.value = hasTrackEvidence(_homeRaw.value)
         if (!visible) {
             val reasons = stages.mapNotNull { stage ->
@@ -2921,13 +2941,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         ) {
             _homeHeader.value = outcome.header
         }
-        publishHomeShelves(
+        val visible = publishHomeShelves(
             shelves = outcome.shelves,
             identity = identity,
             generation = generation,
             replace = replace,
             scope = HOME_SCOPE_SPOTIFY,
         )
+        if (isCurrentHomeLoad(identity, generation)) _homeSourceEvidence.value = visible
     }
 
     /** [refreshHome]'s Apple half: the personalised feed read again. */
@@ -2938,13 +2959,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     ) {
         val outcome = AppleHomeSource.shelf().getOrNull() ?: return
         if (!isCurrentHomeLoad(identity, generation) || outcome.items.isEmpty()) return
-        publishHomeShelves(
+        val visible = publishHomeShelves(
             shelves = listOf(outcome),
             identity = identity,
             generation = generation,
             replace = replace,
             scope = HOME_SCOPE_APPLE,
         )
+        // The Flow gate asks whether this provider produced rows. A refresh
+        // that answered with nothing must not leave the old answer standing.
+        if (isCurrentHomeLoad(identity, generation)) _homeSourceEvidence.value = visible
     }
 
     /**
@@ -3235,8 +3259,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.ALL) {
             _homeRecentlyPlayedLoading.value = false
-            _homeRaw.value = emptyList()
-            homeSeenTitles.clear()
+            // The old feed stays on screen while the new one is read. A refresh
+            // that fails must leave the page the listener already had.
             val stages = stageAllHomeSources()
             if (!isCurrentHomeLoad(identity, generation)) return@coroutineScope
             publishAllHomeStages(stages, identity, generation, replace = true)
@@ -5512,6 +5536,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** The active explicit Flow build, cancelled when a newer build starts. */
     private var flowBuildJob: Job? = null
 
+    /** Keeps two callers from building the same session mix at once. */
+    private val flowEnsureMutex = Mutex()
+
     /** Unseen Apple rows reserved for later Flow top-ups. */
     private var flowAppleGrowPool: MutableList<Song> = mutableListOf()
     private val flowAppleGrowSeenIds: MutableSet<String> = mutableSetOf()
@@ -5953,27 +5980,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     suspend fun ensureFlowTracks(limit: Int = FlowEngine.INITIAL_TRACKS): List<Song> {
         ((_flowQueue.value as? UiState.Success)?.data?.takeIf { it.isNotEmpty() })?.let { return it }
-        val algorithm = AppSettings.recommendationAlgorithm.value
-        val generation = flowBuildGeneration.incrementAndGet()
-        flowBuildJob?.cancel()
-        _flowLoading.value = true
-        try {
-            val built = buildFlowQueue(limit, algorithm)
-            if (!flowBuildMayPublish(
-                    generation = generation,
-                    currentGeneration = flowBuildGeneration.get(),
-                    algorithm = algorithm,
-                    currentAlgorithm = AppSettings.recommendationAlgorithm.value,
-                )
-            ) {
-                return emptyList()
+        // One build at a time. The screen and the player both ask for the
+        // mix; without this the second caller started its own build, made the
+        // first one stale, and the first one answered with an empty list.
+        return flowEnsureMutex.withLock {
+            ((_flowQueue.value as? UiState.Success)?.data?.takeIf { it.isNotEmpty() })
+                ?.let { return@withLock it }
+            val algorithm = AppSettings.recommendationAlgorithm.value
+            val generation = flowBuildGeneration.incrementAndGet()
+            flowBuildJob?.cancel()
+            _flowLoading.value = true
+            try {
+                val built = buildFlowQueue(limit, algorithm)
+                if (!flowBuildMayPublish(
+                        generation = generation,
+                        currentGeneration = flowBuildGeneration.get(),
+                        algorithm = algorithm,
+                        currentAlgorithm = AppSettings.recommendationAlgorithm.value,
+                    )
+                ) {
+                    // A newer build took over. Hand back what it published
+                    // rather than nothing.
+                    return@withLock ((_flowQueue.value as? UiState.Success)?.data).orEmpty()
+                }
+                _flowQueue.value = UiState.Success(built)
+                _flowSaved.value = false
+                FlowStore.saveSnapshot(built, algorithm)
+                built
+            } finally {
+                if (generation == flowBuildGeneration.get()) _flowLoading.value = false
             }
-            _flowQueue.value = UiState.Success(built)
-            _flowSaved.value = false
-            FlowStore.saveSnapshot(built, algorithm)
-            return built
-        } finally {
-            if (generation == flowBuildGeneration.get()) _flowLoading.value = false
         }
     }
 
