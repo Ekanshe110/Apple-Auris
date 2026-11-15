@@ -1,6 +1,7 @@
 package com.music.bitchord
 
 import com.music.bitchord.data.apple.AppleLibraryCollection
+import com.music.bitchord.data.apple.AppleLibraryScope
 import com.music.bitchord.data.apple.AppleLibraryScopeKey
 import com.music.bitchord.data.apple.AppleLibraryState
 import com.music.bitchord.data.apple.AppleLibraryStore
@@ -12,9 +13,12 @@ import com.music.bitchord.data.sources.addon.AddonLibraryItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -168,6 +172,143 @@ class AppleLibraryStoreTest {
         assertEquals(6, scope.state.value.items.size)
         assertEquals(listOf("1", "2", "3", "4", "5", "6"), scope.state.value.items.map { it.id })
         assertEquals(6, scope.state.value.nextOffset)
+    }
+
+    @Test
+    fun `evicting the 17th scope cancels the oldest and keeps the newest 16`() {
+        val config = sourceConfig(id = "test")
+        val scopes = (1..17).map { i ->
+            AppleLibraryStore.scope(
+                config,
+                AppleLibraryCollection.PLAYLISTS,
+                "pl.$i",
+                dispatcher = Dispatchers.Unconfined,
+            )
+        }
+        val oldest = scopes[0]
+        assertTrue(oldest.job.isCancelled)
+        assertFalse(scopes[1].job.isCancelled)
+        assertFalse(scopes[16].job.isCancelled)
+        // Re-reading an evicted key returns a fresh scope, not the cancelled one.
+        assertNotSame(
+            oldest,
+            AppleLibraryStore.scope(
+                config,
+                AppleLibraryCollection.PLAYLISTS,
+                "pl.1",
+                dispatcher = Dispatchers.Unconfined,
+            ),
+        )
+        // The newest 16 scopes are still the same instances.
+        assertSame(scopes[1], scopeBy(config, "pl.2"))
+        assertSame(scopes[16], scopeBy(config, "pl.17"))
+    }
+
+    @Test
+    fun `touching an old scope makes it recent so a different one is evicted`() {
+        val config = sourceConfig(id = "test")
+        val scopes = (1..16).map { i ->
+            AppleLibraryStore.scope(
+                config,
+                AppleLibraryCollection.PLAYLISTS,
+                "pl.$i",
+                dispatcher = Dispatchers.Unconfined,
+            )
+        }
+        // Touch the oldest scope (pl.1) so it becomes the most recent.
+        assertSame(scopes[0], scopeBy(config, "pl.1"))
+        val touched = scopes[0]
+
+        val seventeenth = AppleLibraryStore.scope(
+            config,
+            AppleLibraryCollection.PLAYLISTS,
+            "pl.17",
+            dispatcher = Dispatchers.Unconfined,
+        )
+        // pl.2 was the eldest non-touched scope, so it is evicted.
+        assertTrue(scopes[1].job.isCancelled)
+        // The touched scope survives.
+        assertFalse(touched.job.isCancelled)
+        assertSame(touched, scopeBy(config, "pl.1"))
+    }
+
+    @Test
+    fun `the visible open scope is not evicted`() {
+        val config = sourceConfig(id = "test")
+        val scopes = (1..16).map { i ->
+            AppleLibraryStore.scope(
+                config,
+                AppleLibraryCollection.PLAYLISTS,
+                "pl.$i",
+                dispatcher = Dispatchers.Unconfined,
+            )
+        }
+        AppleLibraryStore.markVisible(scopes[0].key)
+
+        AppleLibraryStore.scope(
+            config,
+            AppleLibraryCollection.PLAYLISTS,
+            "pl.17",
+            dispatcher = Dispatchers.Unconfined,
+        )
+        // pl.2 is the eldest non-visible scope and is evicted.
+        assertTrue(scopes[1].job.isCancelled)
+        // The visible scope survives.
+        assertFalse(scopes[0].job.isCancelled)
+        assertSame(scopes[0], scopeBy(config, "pl.1"))
+        AppleLibraryStore.unmarkVisible(scopes[0].key)
+    }
+
+    @Test
+    fun `appending past 800 rows keeps the first 800 and stops paging`() = runTest {
+        val config = sourceConfig(id = "test")
+        val pages = mutableMapOf<Int, List<String>>()
+        (0..800 step 500).forEach { offset ->
+            pages[offset] = (0 until 500).map { (offset + it).toString() }
+        }
+        val scope = AppleLibraryStore.scope(
+            config,
+            AppleLibraryCollection.PLAYLISTS,
+            null,
+            dispatcher = Dispatchers.Unconfined,
+            loader = { _, offset ->
+                val items = pages.getValue(offset).map { AddonLibraryItem(id = it, title = it) }
+                AppleLibraryState.Ready(
+                    items = items,
+                    hasMore = offset < 500,
+                    nextOffset = offset + 500,
+                )
+            },
+        )
+
+        scope.open(config)
+        assertEquals(500, scope.state.value.items.size)
+        assertTrue(scope.state.value.hasMore)
+
+        scope.loadMore(config)
+        assertEquals(800, scope.state.value.items.size)
+        assertFalse(scope.state.value.hasMore)
+        assertNull(scope.state.value.nextOffset)
+        // First page is preserved.
+        assertEquals("0", scope.state.value.items[0].id)
+        assertEquals("499", scope.state.value.items[499].id)
+        assertEquals("799", scope.state.value.items[799].id)
+
+        // A further loadMore does nothing now that paging is stopped.
+        scope.loadMore(config)
+        assertEquals(800, scope.state.value.items.size)
+    }
+
+    private fun scopeBy(
+        config: com.music.bitchord.data.sources.SourceConfig,
+        collectionId: String?,
+    ): AppleLibraryScope {
+        return AppleLibraryStore.scope(
+            config,
+            AppleLibraryCollection.PLAYLISTS,
+            collectionId,
+            dispatcher = Dispatchers.Unconfined,
+        )
     }
 
     private fun sourceConfig(

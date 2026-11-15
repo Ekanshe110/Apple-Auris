@@ -14,6 +14,10 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.locks.ReentrantLock
+
+internal const val MAX_LIBRARY_SCOPES = 16
+internal const val MAX_LIBRARY_ROWS_PER_SCOPE = 800
 
 /**
  * One library listing: a collection root, or the tracks of one collection.
@@ -81,7 +85,7 @@ internal class AppleLibraryScope(
     private val _state = MutableStateFlow(AppleLibraryScopeState())
     val state: StateFlow<AppleLibraryScopeState> = _state.asStateFlow()
 
-    private val job = SupervisorJob()
+    internal val job = SupervisorJob()
     private val scope = CoroutineScope(job + dispatcher)
 
     init {
@@ -151,10 +155,12 @@ internal class AppleLibraryScope(
             when (page) {
                 is AppleLibraryState.Ready -> {
                     val merged = appendItems(current.items, page.items)
+                    val overLimit = merged.size > MAX_LIBRARY_ROWS_PER_SCOPE
+                    val capped = if (overLimit) merged.take(MAX_LIBRARY_ROWS_PER_SCOPE) else merged
                     _state.value = _state.value.copy(
-                        items = merged,
-                        hasMore = page.hasMore,
-                        nextOffset = page.nextOffset,
+                        items = capped,
+                        hasMore = if (overLimit) false else page.hasMore,
+                        nextOffset = if (overLimit) null else page.nextOffset,
                         loadingMore = false,
                         moreFailure = null,
                     )
@@ -321,7 +327,12 @@ internal fun SourceConfig.libraryAccountFingerprint(): String {
 object AppleLibraryStore {
 
     private val repositories = ConcurrentHashMap<String, AppleLibraryRepository>()
-    private val scopes = ConcurrentHashMap<String, AppleLibraryScope>()
+    // Access-ordered LRU of cached scopes. Guarded by scopeLock because scope()
+    // is not a suspend function, so a coroutine Mutex cannot be used here.
+    private val scopeLock = ReentrantLock()
+    private val scopes = LinkedHashMap<String, AppleLibraryScope>(MAX_LIBRARY_SCOPES, 0.75f, true)
+    /** Scope keys currently on screen; never evicted while another candidate exists. */
+    private val visibleScopes = mutableSetOf<String>()
 
     /** The one repository for this addon, reused for the whole session. */
     fun repository(config: SourceConfig): AppleLibraryRepository =
@@ -344,15 +355,62 @@ object AppleLibraryStore {
             collection = collection,
             collectionId = collectionId,
         )
-        return scopes.getOrPut(key.cacheKey) {
-            AppleLibraryScope(key, dispatcher = dispatcher, loader = loader)
+        scopeLock.lock()
+        return try {
+            val existing = scopes[key.cacheKey]
+            if (existing != null) {
+                existing
+            } else {
+                evictIfNeededLocked(key.cacheKey)
+                val newScope = AppleLibraryScope(key, dispatcher = dispatcher, loader = loader)
+                scopes[key.cacheKey] = newScope
+                newScope
+            }
+        } finally {
+            scopeLock.unlock()
+        }
+    }
+
+    /** Marks a scope as currently visible/open so it is not evicted. */
+    internal fun markVisible(key: AppleLibraryScopeKey) {
+        scopeLock.lock()
+        try {
+            visibleScopes.add(key.cacheKey)
+        } finally {
+            scopeLock.unlock()
+        }
+    }
+
+    /** Clears the visible mark for a scope. */
+    internal fun unmarkVisible(key: AppleLibraryScopeKey) {
+        scopeLock.lock()
+        try {
+            visibleScopes.remove(key.cacheKey)
+        } finally {
+            scopeLock.unlock()
+        }
+    }
+
+    private fun evictIfNeededLocked(excludedKey: String) {
+        while (scopes.size >= MAX_LIBRARY_SCOPES) {
+            val victimKey = scopes.keys.firstOrNull { it != excludedKey && it !in visibleScopes }
+            if (victimKey == null) return
+            val victim = scopes.remove(victimKey)
+            victim?.cancel()
+            visibleScopes.remove(victimKey)
         }
     }
 
     /** Forgets every cached listing. Used by tests. */
     internal fun clear() {
-        scopes.values.forEach { it.cancel() }
-        scopes.clear()
+        scopeLock.lock()
+        try {
+            scopes.values.forEach { it.cancel() }
+            scopes.clear()
+            visibleScopes.clear()
+        } finally {
+            scopeLock.unlock()
+        }
         repositories.clear()
     }
 }
