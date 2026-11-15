@@ -239,6 +239,7 @@ import com.music.bitchord.playback.upgradeQuality
 import com.music.bitchord.playback.revertToOriginal
 import com.music.bitchord.playback.requiresStrictAppleIdentity
 import com.music.bitchord.playback.swapToVersion
+import com.music.bitchord.playback.switchRendition
 import com.music.bitchord.playback.smart.VersionAudioAligner
 import com.music.bitchord.download.DownloadSession
 import com.music.bitchord.download.DownloadStore
@@ -326,6 +327,7 @@ import com.music.bitchord.ui.icons.BitChordIcons
 import androidx.media3.common.Player
 import com.music.bitchord.data.YtMusicRepository
 import com.music.bitchord.ui.player.ListenTogetherMembersSheet
+import com.music.bitchord.ui.player.LocalRenditionSwitch
 import com.music.bitchord.ui.player.NowPlayingScreen
 import com.music.bitchord.ui.player.PlayerSheetMotion
 import androidx.compose.ui.geometry.Offset
@@ -3329,7 +3331,12 @@ private fun BitChordApp(
                         it.memberId == playback.startedBy
                     }?.displayName?.takeIf(String::isNotBlank)
             }
-        NowPlayingScreen(
+        CompositionLocalProvider(
+            LocalRenditionSwitch provides { toAtmos ->
+                controller?.switchRendition(toAtmos)
+            },
+        ) {
+            NowPlayingScreen(
             song = displayedSong,
             playedBy = playedBy,
             colors = com.music.bitchord.ui.player.PlayerColorOverrides(
@@ -3610,6 +3617,7 @@ private fun BitChordApp(
                 }
             },
         )
+        }
     }
 
     // Keep the root page's new state in one holder. This code stays outside

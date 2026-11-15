@@ -28,6 +28,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -56,6 +58,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.derivedStateOf
@@ -339,9 +342,18 @@ private const val MIXING_LABEL_REST = 0.5f
 private const val BAR_OPACITY = 0.9f
 
 /**
+ * Sends the per-song rendition toggle to the app hosting the player.
+ *
+ * Null where the platform has no playback service to switch, in which case
+ * the badge keeps its ordinary stats tap.
+ */
+val LocalRenditionSwitch = compositionLocalOf<((Boolean) -> Unit)?> { null }
+
+/**
  * The quality badge between the timestamps — "Lossless", "Hi-Res", a loading
  * shimmer while a lossless source is still being looked for.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun PlaybackQualityLabel(
     song: Song,
@@ -372,6 +384,12 @@ internal fun PlaybackQualityLabel(
     // the measurement behind it, one tap away rather than in a dialog
     // somewhere else.
     var details by remember { mutableStateOf(false) }
+    val switchRendition = LocalRenditionSwitch.current
+    // Only a badge that is already stating one of the two mixes offers the
+    // other one: a blank or lossy-only badge is not a switch.
+    val renditionSwitchable = switchRendition != null &&
+        song.atmosAvailable &&
+        (nerdStats?.isDolbyAtmos == true || nerdStats?.isLossless == true)
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         LosslessOrStats(
             isLoading = isLoading,
@@ -379,8 +397,20 @@ internal fun PlaybackQualityLabel(
             losslessRequested = losslessRequested,
             effectiveQuality = effectiveQuality,
             nerdStats = nerdStats,
-            modifier = Modifier
-                .clickable(enabled = nerdStats != null) { details = true },
+            modifier = Modifier.then(
+                if (renditionSwitchable) {
+                    Modifier.combinedClickable(
+                        onClick = {
+                            // The badge states what is playing; the tap asks for the
+                            // other mix of the same recording, at the same position.
+                            switchRendition?.invoke(nerdStats?.isDolbyAtmos != true)
+                        },
+                        onLongClick = { if (nerdStats != null) details = true },
+                    )
+                } else {
+                    Modifier.clickable(enabled = nerdStats != null) { details = true }
+                },
+            ),
         )
         val measured = nerdStats
         if (details && measured != null) {
