@@ -43,6 +43,7 @@ object AppleCatalogRepository {
                         },
                         contentRating = track.contentRating?.lowercase(Locale.ROOT),
                         isrc = track.isrc?.trim()?.takeIf { it.isNotEmpty() },
+                        atmosAvailable = track.atmos == true,
                         appleCatalogId = track.id,
                     )
                 }
