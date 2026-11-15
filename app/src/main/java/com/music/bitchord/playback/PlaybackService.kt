@@ -225,6 +225,9 @@ const val ACTION_COMMIT_RADIO_QUEUE = "com.music.bitchord.action.COMMIT_RADIO_QU
 /** Session command behind the player menu's "Upgrade quality". */
 const val ACTION_UPGRADE_QUALITY = "com.music.bitchord.action.UPGRADE_QUALITY"
 
+/** Session command behind the player's per-song Atmos / lossless toggle. */
+const val ACTION_SWITCH_RENDITION = "com.music.bitchord.action.SWITCH_RENDITION"
+
 /**
  * App-side gate for explicit quality retries.
  *
@@ -840,6 +843,7 @@ class PlaybackService : MediaLibraryService() {
     private val beginRadioQueueCommand = SessionCommand(ACTION_BEGIN_RADIO_QUEUE, Bundle.EMPTY)
     private val commitRadioQueueCommand = SessionCommand(ACTION_COMMIT_RADIO_QUEUE, Bundle.EMPTY)
     private val upgradeQualityCommand = SessionCommand(ACTION_UPGRADE_QUALITY, Bundle.EMPTY)
+    private val switchRenditionCommand = SessionCommand(ACTION_SWITCH_RENDITION, Bundle.EMPTY)
     private val swapVersionCommand = SessionCommand(ACTION_SWAP_VERSION, Bundle.EMPTY)
     private val reorderQueueCommand = SessionCommand(ACTION_REORDER_QUEUE, Bundle.EMPTY)
     private val queueDragCommand = SessionCommand(ACTION_QUEUE_DRAG, Bundle.EMPTY)
@@ -5515,6 +5519,9 @@ class PlaybackService : MediaLibraryService() {
         val item = player.currentMediaItem ?: return
         val mediaId = item.mediaId
         val uri = item.localConfiguration?.uri
+        // A rendition chosen by hand on this item is not a candidate for the
+        // automatic hunt; a "better" copy under the global rung would undo it.
+        if (uri?.getQueryParameter("r") != null) return
         val alreadyPending = QualityUpgrade.isPending(mediaId)
         val shelved = QualityUpgrade.shelvedFor(mediaId)
         if (shelved == null && !alreadyPending && !QualityUpgrade.couldStillUpgrade(mediaId, uri, byHand)) return
@@ -5676,6 +5683,45 @@ class PlaybackService : MediaLibraryService() {
         TrackLog.d("BitChord", "upgrade asked for by hand for $mediaId", about = mediaId)
         lookForBetterCopy(player, byHand = true)
         return UpgradeOutcome.STARTED
+    }
+
+    /**
+     * Re-opens the playing track in the other rendition, at the same position.
+     *
+     * The choice rides on the item's URI so preparation, the resolver and the
+     * disk cache all agree on which file this is. No global setting changes,
+     * and the next track keeps the listener's rung.
+     */
+    private fun switchCurrentRendition(toAtmos: Boolean) {
+        val active = player ?: return
+        // The standby pair is shared with the quality fade and version swaps.
+        if (upgradeFadeActive || versionSwapJob?.isActive == true) return
+        if (crossfade?.isTransitioning() == true) return
+        val item = active.currentMediaItem ?: return
+        val index = active.currentMediaItemIndex
+        val uri = item.localConfiguration?.uri ?: return
+        val target = if (toAtmos) "atmos" else "lossless"
+        if (uri.getQueryParameter("r") == target) return
+        val switchedUri = uri.buildUpon()
+            .removeQueryParameter("r")
+            .appendQueryParameter("r", target)
+            .build()
+        val switched = item.buildUpon().setUri(switchedUri).build()
+        val mediaId = item.mediaId
+        val now = swapPointFor(mediaId)
+        if (now != null) {
+            when (crossfadeUpgradeIn(mediaId, now, switched, switchedUri.toString())) {
+                UpgradeSwap.Crossfaded -> return
+                UpgradeSwap.Abandoned, UpgradeSwap.Failed -> return
+                UpgradeSwap.Fallback -> Unit
+            }
+        }
+        val at = active.currentPosition
+        swappingMediaId = mediaId
+        swapCutAt = SystemClock.elapsedRealtime()
+        active.replaceMediaItem(index, switched)
+        active.seekTo(index, at)
+        active.prepare()
     }
 
     /**
@@ -10167,6 +10213,7 @@ class PlaybackService : MediaLibraryService() {
                 .add(beginRadioQueueCommand)
                 .add(commitRadioQueueCommand)
                 .add(upgradeQualityCommand)
+                .add(switchRenditionCommand)
                 .add(swapVersionCommand)
                 .add(reorderQueueCommand)
                 .add(queueDragCommand)
@@ -10211,6 +10258,8 @@ class PlaybackService : MediaLibraryService() {
                         ),
                     )
                 }
+                ACTION_SWITCH_RENDITION ->
+                    switchCurrentRendition(args.getBoolean(EXTRA_RENDITION_ATMOS, false))
                 ACTION_SWAP_VERSION -> {
                     val bundle = args.getBundle(EXTRA_SWAP_MEDIA_ITEM)
                     if (bundle != null) {

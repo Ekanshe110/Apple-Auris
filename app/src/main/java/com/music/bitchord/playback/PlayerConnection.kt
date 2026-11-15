@@ -224,6 +224,19 @@ fun MediaController.revertToOriginal() {
 }
 
 /**
+ * Re-opens the playing track in its other rendition, at the same position.
+ *
+ * Per song on purpose: the listener is asking to hear this mix, not to
+ * change the quality rung every later track is resolved under.
+ */
+fun MediaController.switchRendition(toAtmos: Boolean) {
+    sendCustomCommand(
+        SessionCommand(ACTION_SWITCH_RENDITION, Bundle.EMPTY),
+        bundleOf(EXTRA_RENDITION_ATMOS to toAtmos),
+    )
+}
+
+/**
  * Asks the service to smoothly transition the playing track to another version/rendition.
  */
 fun MediaController.swapToVersion(targetSong: Song) {
@@ -642,6 +655,9 @@ private const val EXTRA_VIDEO_ORIGIN = "bitchord.isVideoOrigin"
 
 /** Set only on the replacement item produced by [QualityUpgrade]. */
 const val EXTRA_QUALITY_UPGRADED = "bitchord.qualityUpgraded"
+
+/** Whether the rendition switch asks for the immersive mix. */
+const val EXTRA_RENDITION_ATMOS = "com.music.bitchord.extra.RENDITION_ATMOS"
 
 /**
  * Whether this item was selected from a music-video row, even after conversion.
