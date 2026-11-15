@@ -303,6 +303,8 @@ fun Song.toSongBundle(): Bundle = bundleOf(
     "isVideoOrigin" to isVideoOrigin,
     "setVideoId" to setVideoId,
     "fromAutoplay" to fromAutoplay,
+    "queueTier" to queueTier.name,
+    "queueEntryId" to queueEntryId,
     "radioName" to radioName,
     "localUri" to localUri,
     "downloadFormat" to downloadFormat,
@@ -345,6 +347,10 @@ fun songFromBundle(b: Bundle): Song = Song(
     isVideoOrigin = b.getBoolean("isVideoOrigin"),
     setVideoId = b.getString("setVideoId"),
     fromAutoplay = b.getBoolean("fromAutoplay"),
+    queueTier = b.getString("queueTier")
+        ?.let { runCatching { QueueTier.valueOf(it) }.getOrNull() }
+        ?: QueueTier.CONTEXT,
+    queueEntryId = b.getString("queueEntryId"),
     radioName = b.getString("radioName"),
     localUri = b.getString("localUri"),
     downloadFormat = b.getString("downloadFormat"),
