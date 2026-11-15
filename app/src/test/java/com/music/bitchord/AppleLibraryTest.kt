@@ -1,6 +1,8 @@
 package com.music.bitchord
 
+import com.music.bitchord.data.apple.asLibraryItem
 import com.music.bitchord.data.apple.toSong
+import com.music.bitchord.data.model.Song
 import com.music.bitchord.data.sources.addon.AddonLibraryItem
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -23,6 +25,22 @@ class AppleLibraryTest {
         assertEquals("src:apple-config::apple-stream-id", song?.videoId)
         assertEquals("apple-catalog-id", song?.appleCatalogId)
         assertEquals("Song", song?.title)
+    }
+
+    @Test
+    fun `persisted liked row round trips to the exact catalog identity`() {
+        val original = Song(
+            videoId = "src:apple-config::apple-stream-id",
+            title = "Song",
+            artist = "Artist",
+            thumbnailUrl = null,
+            appleCatalogId = "apple-catalog-id",
+        )
+
+        val restored = original.asLibraryItem().toSong("apple-config")
+
+        assertEquals(original.videoId, restored?.videoId)
+        assertEquals(original.appleCatalogId, restored?.appleCatalogId)
     }
 
     @Test

@@ -2,7 +2,11 @@ package com.music.bitchord.data.apple
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.music.bitchord.data.model.LikeStatus
 import com.music.bitchord.data.model.Song
+import com.music.bitchord.data.model.UiState
+import com.music.bitchord.data.model.LibraryPage
+import com.music.bitchord.data.sources.SourceRegistry
 import com.music.bitchord.data.sources.addon.AddonLibraryItem
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,6 +38,45 @@ object AppleLikedStore {
 
     /** Whether this exact Apple row is currently liked. */
     fun isLiked(videoId: String): Boolean = _items.value.any { it.id == videoId }
+
+    /** The persisted rows as the songs the app's library and rating state use. */
+    internal fun songs(): List<Song> = _items.value.mapNotNull { it.toLikedSong() }
+
+    /**
+     * The library page with Apple's local likes merged into its Liked Music rows.
+     *
+     * Apple's local collection is independent of YouTube's account. Keeping
+     * the two lists apart in the model would make the same heart appear empty
+     * after a restart even though its exact Apple row was persisted.
+     */
+    internal fun mergeIntoLibrary(
+        library: UiState<LibraryPage>,
+        items: List<AddonLibraryItem> = _items.value,
+    ): UiState<LibraryPage> {
+        val appleLiked = items.mapNotNull { it.toLikedSong() }
+        if (appleLiked.isEmpty()) return library
+        val page = (library as? UiState.Success)?.data
+            ?: return if (library is UiState.Loading) {
+                UiState.Success(
+                    LibraryPage(
+                        likedSongs = appleLiked,
+                        librarySongs = emptyList(),
+                        shelves = emptyList(),
+                    ),
+                )
+            } else {
+                library
+            }
+        val known = page.likedSongs.mapTo(HashSet()) { it.videoId }
+        val merged = appleLiked.filter { known.add(it.videoId) } + page.likedSongs
+        return UiState.Success(page.copy(likedSongs = merged))
+    }
+
+    /** Rating state seeded from the persisted Apple collection. */
+    internal fun likeStatuses(
+        items: List<AddonLibraryItem> = _items.value,
+    ): Map<String, LikeStatus> =
+        items.mapNotNull { it.toLikedSong() }.associate { it.videoId to LikeStatus.LIKE }
 
     /** Adds or removes a row, returning the new liked state. */
     fun toggle(item: AddonLibraryItem): Boolean {
@@ -85,13 +128,15 @@ object AppleLikedStore {
 /**
  * A compact library item from a playing song, used for the local liked list.
  *
- * The stream id is the addon track key; the catalog id is the Apple id the
- * server needs for rating writes.
+ * [id] is the app's track key, so the rating state and the persisted row use
+ * one identity. [streamId] is only the addon's raw stream id: it is what the
+ * addon accepts when opening a stream and must not contain the app's own
+ * `src:<config>::` prefix.
  */
 internal fun Song.asLibraryItem(): AddonLibraryItem = AddonLibraryItem(
     id = videoId,
     catalogId = appleCatalogId.orEmpty(),
-    streamId = videoId,
+    streamId = SourceRegistry.parseTrackKey(videoId)?.second ?: videoId,
     title = title,
     artist = artist,
     album = albumName.orEmpty(),
@@ -101,6 +146,40 @@ internal fun Song.asLibraryItem(): AddonLibraryItem = AddonLibraryItem(
     explicit = isExplicit,
     isrc = isrc,
 )
+
+/**
+ * Rebuilds a persisted Apple-liked row without inventing a second identity.
+ *
+ * The persisted id is already the app's track key. Rebuilding it through
+ * `toSong(configId)` would prefix that key again and produce
+ * `src:<config>::src:<config>::<stream>`, so this path preserves the exact id
+ * while retaining the raw stream id for playback.
+ */
+internal fun AddonLibraryItem.toLikedSong(): Song? {
+    val id = id.takeIf { it.isNotBlank() } ?: return null
+    val normalizedRating = contentRating
+        ?.trim()
+        ?.lowercase(java.util.Locale.ROOT)
+        ?.takeIf { it.isNotEmpty() }
+    return Song(
+        videoId = id,
+        title = title.ifBlank { "Untitled" },
+        artist = artist,
+        albumName = album.ifBlank { null },
+        thumbnailUrl = artworkURL.ifBlank { null },
+        durationText = durationSec?.let {
+            "${it / 60}:${"%02d".format(java.util.Locale.ROOT, it % 60)}"
+        },
+        appleCatalogId = catalogId.trim().takeIf { it.isNotEmpty() },
+        isExplicit = explicit ?: when (normalizedRating) {
+            "explicit" -> true
+            "clean" -> false
+            else -> null
+        },
+        contentRating = normalizedRating,
+        isrc = isrc?.trim()?.takeIf { it.isNotEmpty() },
+    )
+}
 
 /** Converts "4:35" to 275.0 seconds, or null if it does not parse. */
 internal fun parseDurationText(text: String): Double? {

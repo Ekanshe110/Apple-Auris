@@ -153,8 +153,22 @@ fun AddonLibraryItem.toSong(configId: String): Song? {
         ?.trim()
         ?.lowercase(Locale.ROOT)
         ?.takeIf { it.isNotEmpty() }
+    val persistedTrackKey = SourceRegistry.parseTrackKey(id)
     return Song(
-        videoId = SourceRegistry.trackKey(configId, streamId),
+        // A persisted local Apple row already carries its exact app identity
+        // in `id`. Source-backed rows carry the app track key; a row liked from
+        // discovery carries that discovery row's id. Re-prefixing either would
+        // produce a different identity. Server library rows keep their
+        // library-resource id in `id`, so they still take the configured
+        // addon prefix.
+        videoId = when {
+            persistedTrackKey != null -> SourceRegistry.trackKey(
+                persistedTrackKey.first,
+                persistedTrackKey.second,
+            )
+            id == streamId -> id
+            else -> SourceRegistry.trackKey(configId, streamId)
+        },
         title = title.ifBlank { "Untitled" },
         artist = artist,
         albumName = album.ifBlank { null },

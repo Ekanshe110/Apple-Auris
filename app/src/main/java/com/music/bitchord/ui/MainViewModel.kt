@@ -1057,7 +1057,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val history: StateFlow<UiState<List<Song>>> = _history.asStateFlow()
 
     private val _library = MutableStateFlow<UiState<LibraryPage>>(UiState.Loading)
-    val library: StateFlow<UiState<LibraryPage>> = _library.asStateFlow()
+
+    /**
+     * The account library with Apple's persisted local likes merged in.
+     *
+     * Apple's local collection survives restarts independently of YouTube's
+     * account feed. Publishing it through this flow keeps both the Library
+     * page and every rating read on the same answer without copying the rows
+     * back into the account cache.
+     */
+    val library: StateFlow<UiState<LibraryPage>> =
+        combine(_library, AppleLikedStore.items) { accountLibrary, appleItems ->
+            AppleLikedStore.mergeIntoLibrary(accountLibrary, appleItems)
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, UiState.Loading)
 
     /** In-memory cache is partitioned by account and profile; it is never shared. */
     private data class ListenerSnapshot(
@@ -1131,11 +1143,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     /** Every rating known for this account: the library's, then this session's. */
     val likeStatuses: StateFlow<Map<String, LikeStatus>> =
-        combine(_library, LikeState.overrides) { library, overrides ->
+        combine(_library, LikeState.overrides, AppleLikedStore.items) { library, overrides, appleItems ->
             val liked = (library as? UiState.Success)?.data?.likedSongs
                 ?.associate { it.videoId to LikeStatus.LIKE }
                 .orEmpty()
-            liked + overrides
+            val appleLiked = AppleLikedStore.likeStatuses(appleItems)
+            liked + appleLiked + overrides
         }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
     fun likeStatusOf(videoId: String): LikeStatus =

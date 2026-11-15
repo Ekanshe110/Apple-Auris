@@ -6,7 +6,10 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.music.bitchord.data.apple.AppleLikedStore
 import com.music.bitchord.data.apple.asLibraryItem
 import com.music.bitchord.data.apple.parseDurationText
+import com.music.bitchord.data.model.LikeStatus
+import com.music.bitchord.data.model.LibraryPage
 import com.music.bitchord.data.model.Song
+import com.music.bitchord.data.model.UiState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -44,11 +47,48 @@ class AppleLikedStoreTest {
     }
 
     @Test
-    fun `persisted rows survive a fresh init`() {
-        AppleLikedStore.add(sampleItem("s2", title = "Persisted"))
+    fun `persisted rows survive a fresh init and hydrate ratings`() {
+        val song = Song(
+            videoId = "src:apple::stream-2",
+            title = "Persisted",
+            artist = "Artist",
+            thumbnailUrl = null,
+            appleCatalogId = "catalog-2",
+        )
+        AppleLikedStore.add(song.asLibraryItem())
         AppleLikedStore.init(context)
-        assertTrue(AppleLikedStore.isLiked("s2"))
+
+        assertTrue(AppleLikedStore.isLiked("src:apple::stream-2"))
         assertEquals("Persisted", AppleLikedStore.items.value.first().title)
+        assertEquals(
+            LikeStatus.LIKE,
+            AppleLikedStore.likeStatuses()[song.videoId],
+        )
+    }
+
+    @Test
+    fun `persisted Apple rows hydrate the library liked section`() {
+        val song = Song(
+            videoId = "src:apple::stream-3",
+            title = "Apple Liked",
+            artist = "Artist",
+            thumbnailUrl = null,
+            appleCatalogId = "catalog-3",
+        )
+        AppleLikedStore.add(song.asLibraryItem())
+        val library = AppleLikedStore.mergeIntoLibrary(
+            UiState.Success(
+                LibraryPage(
+                    likedSongs = emptyList(),
+                    librarySongs = emptyList(),
+                    shelves = emptyList(),
+                ),
+            ),
+        )
+
+        val liked = (library as UiState.Success).data.likedSongs
+        assertEquals(listOf("src:apple::stream-3"), liked.map { it.videoId })
+        assertEquals("catalog-3", liked.first().appleCatalogId)
     }
 
     @Test
@@ -68,6 +108,7 @@ class AppleLikedStoreTest {
         val item = song.asLibraryItem()
         assertEquals(song.videoId, item.id)
         assertEquals(song.appleCatalogId, item.catalogId)
+        assertEquals("stream-1", item.streamId)
         assertEquals(song.title, item.title)
         assertEquals(song.artist, item.artist)
         assertEquals(song.albumName, item.album)
