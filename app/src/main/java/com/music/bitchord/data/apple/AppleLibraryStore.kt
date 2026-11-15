@@ -235,11 +235,10 @@ internal class AppleLibraryScope(
                 // tail: resetting it to page one's next offset would make the
                 // next tap fetch page two a second time.
                 val tail = if (keepRows) current.items.drop(firstPageBoundary) else emptyList()
-                val keepCursor = keepRows && current.nextOffset != null
                 _state.value = current.copy(
                     items = page.items + tail,
-                    hasMore = if (keepCursor) current.hasMore else page.hasMore,
-                    nextOffset = if (keepCursor) current.nextOffset else page.nextOffset,
+                    hasMore = if (keepRows) current.hasMore else page.hasMore,
+                    nextOffset = if (keepRows) current.nextOffset else page.nextOffset,
                     loading = false,
                     refreshing = false,
                     failure = null,

@@ -717,6 +717,7 @@ private class AppleLibraryPageState(
     val detailListState: LazyListState,
 ) {
     var collectionIndex by mutableIntStateOf(0)
+    var visible by mutableStateOf(false)
     var detailId by mutableStateOf<String?>(null)
     var detailTitle by mutableStateOf<String?>(null)
     var config by mutableStateOf<com.music.bitchord.data.sources.SourceConfig?>(null)
@@ -4249,6 +4250,28 @@ private fun BitChordApp(
             )
         } else {
 
+        // Keep the Apple page's dependencies in one holder. Besides making
+        // the route state atomic, this keeps the page-switch lambda below
+        // inside dex's constructor-width limit.
+        appleLibraryPageState.collectionIndex = appleLibraryCollectionIndex
+        appleLibraryPageState.visible = showAppleLibrary
+        appleLibraryPageState.detailId = appleLibraryDetailId
+        appleLibraryPageState.detailTitle = appleLibraryDetailTitle
+        appleLibraryPageState.config = appleCatalogConfig
+        appleLibraryPageState.contentPadding = listPadding
+        appleLibraryPageState.onPlaySong = { song ->
+            playWithResume(listOf(song), 0)
+        }
+        appleLibraryPageState.onCollectionChange = { index ->
+            appleLibraryCollectionIndex = index
+            appleLibraryDetailId = null
+            appleLibraryDetailTitle = null
+        }
+        appleLibraryPageState.onDetailChange = { id, title ->
+            appleLibraryDetailId = id
+            appleLibraryDetailTitle = title
+        }
+
         // On a tablet the page and the player stand side by side rather than
         // one over the other: everything a phone stacks in a single column —
         // the feed, the frosted bars, the tab row — becomes the left half of
@@ -4274,32 +4297,11 @@ private fun BitChordApp(
                         if (!coveredByPlayer) drawContent()
                     },
             ) {
-                // Keep the Apple page's dependencies in one holder. Besides
-                // making the route state atomic, this keeps the page-switch
-                // lambda below inside dex's constructor-width limit.
-                appleLibraryPageState.collectionIndex = appleLibraryCollectionIndex
-                appleLibraryPageState.detailId = appleLibraryDetailId
-                appleLibraryPageState.detailTitle = appleLibraryDetailTitle
-                appleLibraryPageState.config = appleCatalogConfig
-                appleLibraryPageState.contentPadding = listPadding
-                appleLibraryPageState.onPlaySong = { song ->
-                    playWithResume(listOf(song), 0)
-                }
-                appleLibraryPageState.onCollectionChange = { index ->
-                    appleLibraryCollectionIndex = index
-                    appleLibraryDetailId = null
-                    appleLibraryDetailTitle = null
-                }
-                appleLibraryPageState.onDetailChange = { id, title ->
-                    appleLibraryDetailId = id
-                    appleLibraryDetailTitle = title
-                }
-
                 // Which page is on screen, as one name. The transition runs
                 // on the difference between two of these.
                 val pageKey = when {
                     showSpotify && detail == null -> "spotify"
-                    showAppleLibrary && detail == null -> "apple_library"
+                    appleLibraryPageState.visible && detail == null -> "apple_library"
                     showDiscord -> "discord"
                     showHistory -> "history"
                     showFlow -> "flow"

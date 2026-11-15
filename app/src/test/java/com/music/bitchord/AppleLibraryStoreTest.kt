@@ -151,8 +151,8 @@ class AppleLibraryStoreTest {
             loader = { _, offset ->
                 AppleLibraryState.Ready(
                     items = pages.getValue(offset).map { AddonLibraryItem(id = it, title = it) },
-                    hasMore = offset < 4,
-                    nextOffset = if (offset < 4) offset + 2 else null,
+                    hasMore = true,
+                    nextOffset = offset + 2,
                 )
             },
         )
