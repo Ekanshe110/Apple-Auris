@@ -32,6 +32,12 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      - name: Cache the Android NDK
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/lib/android/sdk/ndk/27.0.12077973
+          key: ndk-27.0.12077973-${{ runner.os }}
+
       - name: Write local.properties
         run: |
           {
@@ -45,6 +51,7 @@ jobs:
       - name: Run Android unit tests
         run: |
           cat > "$RUNNER_TEMP/apple-auris-test-filters.gradle" <<'GRADLE'
+          gradle.startParameter.isBuildCacheEnabled = true
           allprojects {
             tasks.withType(org.gradle.api.tasks.testing.Test).configureEach {
               filter {
@@ -61,7 +68,7 @@ jobs:
           GRADLE
           ./gradlew :app:testDevDebugUnitTest \
             -I "$RUNNER_TEMP/apple-auris-test-filters.gradle" \
-            --stacktrace --console=plain
+            --build-cache --stacktrace --console=plain
 
       - name: Upload test reports
         if: failure()
@@ -97,4 +104,4 @@ jobs:
       - run: chmod +x gradlew
 
       - name: Run shared and desktop unit tests
-        run: ./gradlew :shared:jvmTest :desktopApp:test --stacktrace --console=plain
+        run: ./gradlew :shared:jvmTest :desktopApp:test --build-cache --stacktrace --console=plain
