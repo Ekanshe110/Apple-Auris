@@ -308,6 +308,7 @@ fun Song.toSongBundle(): Bundle = bundleOf(
     "downloadFormat" to downloadFormat,
     "localPath" to localPath,
     "sourceQuality" to sourceQuality,
+    "atmosAvailable" to atmosAvailable,
     "playbackSource" to playbackSource,
     "playbackSourceType" to playbackSourceType?.name,
     "playbackSourceId" to playbackSourceId,
@@ -349,6 +350,7 @@ fun songFromBundle(b: Bundle): Song = Song(
     downloadFormat = b.getString("downloadFormat"),
     localPath = b.getString("localPath"),
     sourceQuality = b.getString("sourceQuality"),
+    atmosAvailable = b.getBoolean("atmosAvailable"),
     playbackSource = b.getString("playbackSource"),
     playbackSourceType = b.getString("playbackSourceType")?.let { runCatching { com.music.bitchord.data.model.PlaybackSourceType.valueOf(it) }.getOrNull() },
     playbackSourceId = b.getString("playbackSourceId"),
@@ -539,6 +541,7 @@ fun MediaItem.toSong() = Song(
     // though both had been known.
     downloadFormat = mediaMetadata.extras?.getString(EXTRA_DOWNLOAD_FORMAT),
     sourceQuality = mediaMetadata.extras?.getString(EXTRA_SOURCE_QUALITY),
+    atmosAvailable = mediaMetadata.extras?.getBoolean(EXTRA_ATMOS_AVAILABLE) == true,
     appleCatalogId = mediaMetadata.extras?.getString(EXTRA_APPLE_CATALOG_ID),
     appleLookupError = mediaMetadata.extras?.getString(EXTRA_APPLE_LOOKUP_ERROR),
     contentRating = mediaMetadata.extras?.getString(EXTRA_CONTENT_RATING),
@@ -628,6 +631,9 @@ internal const val EXTRA_DOWNLOAD_FORMAT = "bitchord.downloadFormat"
 
 /** What the stream claimed to be, e.g. "128 kbps". Survives the round trip. */
 internal const val EXTRA_SOURCE_QUALITY = "bitchord.sourceQuality"
+
+/** Catalogue says an Atmos mix exists for this row. Never a probe. */
+internal const val EXTRA_ATMOS_AVAILABLE = "bitchord.atmosAvailable"
 
 /** Apple's catalogue song id, kept distinct from the addon's playback token. */
 internal const val EXTRA_APPLE_CATALOG_ID = "bitchord.appleCatalogId"
@@ -1066,7 +1072,7 @@ fun Song.toMediaItem(parentBrowseId: String? = null, playLocalFile: Boolean = tr
                     sourceQuality != null || appleCatalogId != null ||
                     appleLookupError != null || artistId != null || albumId != null || setVideoId != null ||
                     isExplicit != null || contentRating != null || isrc != null ||
-                    isVideo || isVideoOrigin || radioName != null ||
+                    atmosAvailable || isVideo || isVideoOrigin || radioName != null ||
                     playbackSource != null || playbackSourceType != null || playbackSourceId != null ||
                     parentBrowseId != null
                 ) {
@@ -1090,6 +1096,7 @@ fun Song.toMediaItem(parentBrowseId: String? = null, playLocalFile: Boolean = tr
                             EXTRA_LOCAL_PATH to localPath,
                             EXTRA_DOWNLOAD_FORMAT to formatBadge,
                             EXTRA_SOURCE_QUALITY to sourceQuality,
+                            EXTRA_ATMOS_AVAILABLE to atmosAvailable,
                             EXTRA_APPLE_CATALOG_ID to appleCatalogId,
                             EXTRA_APPLE_LOOKUP_ERROR to appleLookupError,
                             EXTRA_DURATION to durationText,

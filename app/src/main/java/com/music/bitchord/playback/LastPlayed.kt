@@ -152,6 +152,7 @@ object LastPlayed {
         val sourceId: String? = null,
         val appleCatalogId: String? = null,
         val appleLookupError: String? = null,
+        val atmosAvailable: Boolean = false,
     ) {
         fun toSong(): Song {
             val resolvedTier = when (tier) {
@@ -181,6 +182,7 @@ object LastPlayed {
                 playbackSourceId = sourceId,
                 appleCatalogId = appleCatalogId,
                 appleLookupError = appleLookupError,
+                atmosAvailable = atmosAvailable,
                 localUri = local,
                 localPath = path,
             )
@@ -209,6 +211,7 @@ object LastPlayed {
                 sourceId = song.playbackSourceId,
                 appleCatalogId = song.appleCatalogId,
                 appleLookupError = song.appleLookupError,
+                atmosAvailable = song.atmosAvailable,
             )
         }
     }
