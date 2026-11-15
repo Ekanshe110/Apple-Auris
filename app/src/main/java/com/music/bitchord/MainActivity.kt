@@ -5350,7 +5350,13 @@ private fun BitChordApp(
                             // The settings page's own two-state selector, so the
                             // app has one look for "pick one of these".
                             sourceSwitcher = {
-                                val currentSources = visibleSearchSources(appleModeEnabled)
+                                // Read the provider here instead of holding a
+                                // second local for it: this page is the widest
+                                // lambda in the app, and every captured value
+                                // costs a dex register in its constructor.
+                                val currentSources = visibleSearchSources(
+                                    homeProvider == HomeProvider.APPLE,
+                                )
                                 SegmentedControl(
                                     options = currentSources.map { source ->
                                         when (source) {

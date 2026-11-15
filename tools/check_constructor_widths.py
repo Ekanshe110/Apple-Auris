@@ -20,6 +20,9 @@ So: every constructor in the compiled classes is counted, and anything
 wider than 254 arguments fails the build.
 
     python3 tools/check_constructor_widths.py app/build/tmp/kotlin-classes/devRelease
+
+A class that cannot be parsed is a failure too, not a silent pass: a
+guard that quietly skips the classes it cannot read is not a guard.
 """
 import glob
 import os
@@ -27,59 +30,99 @@ import struct
 import sys
 
 
+# Constant pool entry sizes, tag byte included. Long and double take two
+# slots in the pool, which is why the reader below advances the index twice
+# for them.
+CONSTANT_SIZES = {
+    3: 5,    # Integer
+    4: 5,    # Float
+    5: 9,    # Long
+    6: 9,    # Double
+    7: 3,    # Class
+    8: 3,    # String
+    9: 5,    # Fieldref
+    10: 5,   # Methodref
+    11: 5,   # InterfaceMethodref
+    12: 5,   # NameAndType
+    15: 4,   # MethodHandle
+    16: 3,   # MethodType
+    17: 5,   # Dynamic
+    18: 5,   # InvokeDynamic
+    19: 3,   # Module
+    20: 3,   # Package
+}
+
+
 def constant_pool(data):
-    off = 8
-    count = struct.unpack_from(">H", data, off)[0]
-    off += 2
+    """The pool's entries, by index. Unknown tags are a hard error."""
+    count = struct.unpack_from(">H", data, 8)[0]
+    off = 10
     pool = {}
     i = 1
     while i < count:
         tag = data[off]
-        off += 1
         if tag == 1:
-            length = struct.unpack_from(">H", data, off)[0]
-            off += 2
-            pool[i] = data[off:off + length].decode("utf-8", "replace")
-            off += length
-        elif tag in (7, 8, 16, 19, 20):
-            pool[i] = struct.unpack_from(">H", data, off)[0]
-            off += 2
-        elif tag == 15:
-            off += 3
-        elif tag in (17, 18):
-            off += 4
-        elif tag in (3, 4, 9, 10, 11, 12):
-            off += 4
-        elif tag in (5, 6):
-            off += 8
-            i += 1
+            length = struct.unpack_from(">H", data, off + 1)[0]
+            pool[i] = data[off + 3: off + 3 + length].decode("utf-8", "replace")
+            off += 3 + length
+        elif tag in CONSTANT_SIZES:
+            size = CONSTANT_SIZES[tag]
+            if tag in (7, 8, 16):
+                pool[i] = struct.unpack_from(">H", data, off + 1)[0]
+            elif tag in (9, 10, 11, 12, 17, 18):
+                pool[i] = struct.unpack_from(">H", data, off + 1)[0]
+            off += size
         else:
             raise ValueError("unknown constant pool tag %d" % tag)
-        i += 1
-    return pool
+        if tag in (5, 6):
+            i += 2
+        else:
+            i += 1
+    return pool, off
 
 
-def methods_of(data, pool):
-    off = 8 + 2 + (len(pool) + 1) * 0  # the pool was parsed already; walk on
-    # Reparse to find where the pool ended.
+def code_line(info, pool):
+    """The first source line in a method's Code attribute, when it has one."""
+    off = 4  # max_stack, max_locals
+    code_length = struct.unpack_from(">I", info, off)[0]
+    off += 4 + code_length
+    exception_count = struct.unpack_from(">H", info, off)[0]
+    off += 2 + 8 * exception_count
+    attribute_count = struct.unpack_from(">H", info, off)[0]
+    off += 2
+    best = None
+    for _ in range(attribute_count):
+        name_index = struct.unpack_from(">H", info, off)[0]
+        length = struct.unpack_from(">I", info, off + 2)[0]
+        body = info[off + 6: off + 6 + length]
+        off += 6 + length
+        if pool.get(name_index) != "LineNumberTable":
+            continue
+        entries = struct.unpack_from(">H", body, 0)[0]
+        for index in range(entries):
+            line = struct.unpack_from(">H", body, 4 + index * 4)[0]
+            if best is None or line < best:
+                best = line
+    return best
+
+
+def methods(data, pool):
+    """Every method with the source line its code starts on, when known."""
     count = struct.unpack_from(">H", data, 8)[0]
     off = 10
     i = 1
     while i < count:
         tag = data[off]
-        off += 1
         if tag == 1:
-            off += 2 + struct.unpack_from(">H", data, off)[0]
-        elif tag in (7, 8, 16, 19, 20):
-            off += 2
-        elif tag == 15:
-            off += 3
-        elif tag in (17, 18, 3, 4, 9, 10, 11, 12):
-            off += 4
-        elif tag in (5, 6):
-            off += 8
+            off += 3 + struct.unpack_from(">H", data, off + 1)[0]
+        elif tag in CONSTANT_SIZES:
+            off += CONSTANT_SIZES[tag]
+        else:
+            raise ValueError("unknown constant pool tag %d" % tag)
+        if tag in (5, 6):
+            i += 2
+        else:
             i += 1
-        i += 1
 
     off += 6  # access_flags, this_class, super_class
     interfaces = struct.unpack_from(">H", data, off)[0]
@@ -95,7 +138,7 @@ def methods_of(data, pool):
             length = struct.unpack_from(">I", data, off)[0]
             off += 4 + length
 
-    methods = []
+    found = []
     count = struct.unpack_from(">H", data, off)[0]
     off += 2
     for _ in range(count):
@@ -103,12 +146,16 @@ def methods_of(data, pool):
         off += 6
         attributes = struct.unpack_from(">H", data, off)[0]
         off += 2
+        line = None
         for _ in range(attributes):
-            off += 2
-            length = struct.unpack_from(">I", data, off)[0]
-            off += 4 + length
-        methods.append((pool[name_index], pool[descriptor_index]))
-    return methods
+            attribute_name = struct.unpack_from(">H", data, off)[0]
+            length = struct.unpack_from(">I", data, off + 2)[0]
+            info = data[off + 6: off + 6 + length]
+            off += 6 + length
+            if pool.get(attribute_name) == "Code":
+                line = code_line(info, pool)
+        found.append((pool.get(name_index), pool.get(descriptor_index), line))
+    return found
 
 
 def argument_words(descriptor):
@@ -134,23 +181,35 @@ def argument_words(descriptor):
 def main(roots):
     limit = 254
     bad = []
+    unreadable = []
+    widest = []
     for root in roots:
         for path in glob.glob(os.path.join(root, "**", "*.class"), recursive=True):
             data = open(path, "rb").read()
             if data[:4] != b"\xca\xfe\xba\xbe":
                 continue
             try:
-                pool = constant_pool(data)
-                for name, descriptor in methods_of(data, pool):
-                    if name != "<init>":
+                pool, _ = constant_pool(data)
+                for name, descriptor, line in methods(data, pool):
+                    if name != "<init>" or descriptor is None:
                         continue
                     words = argument_words(descriptor)
+                    widest.append((words, path, line))
                     if words > limit:
-                        bad.append((words, path))
-            except (ValueError, KeyError, IndexError, struct.error):
-                continue
-    for words, path in sorted(bad, reverse=True):
-        print("%s: constructor takes %d arguments" % (path, words))
+                        bad.append((words, path, line))
+            except (ValueError, KeyError, IndexError, struct.error) as failure:
+                unreadable.append((path, failure))
+    for words, path, line in sorted(bad, reverse=True):
+        where = "" if line is None else " (source line %d)" % line
+        print("%s: constructor takes %d arguments%s" % (path, words, where))
+    if unreadable:
+        print("")
+        print("%d class file(s) could not be read, so their constructors were"
+              % len(unreadable))
+        print("not counted. A guard that skips what it cannot read is not a guard.")
+        for path, failure in sorted(unreadable)[:20]:
+            print("  %s: %s" % (path, failure))
+        return 1
     if bad:
         print(
             "\n%d constructor(s) wider than dex can call. A call to a "
@@ -159,7 +218,14 @@ def main(roots):
             "lambda that holds more than 254 of them cannot be called." % len(bad)
         )
         return 1
-    print("constructors: all within dex's argument limit")
+    widest.sort(reverse=True)
+    if widest:
+        words, path, line = widest[0]
+        where = "" if line is None else " (source line %d)" % line
+        print("constructors: all within dex's argument limit (widest %d: %s%s)"
+              % (words, os.path.basename(path), where))
+    else:
+        print("constructors: all within dex's argument limit")
     return 0
 
 
