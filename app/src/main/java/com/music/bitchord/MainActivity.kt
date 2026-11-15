@@ -142,6 +142,7 @@ import com.music.bitchord.auth.YtMusicLoginScreen
 import com.music.bitchord.data.AppAnnouncements
 import com.music.bitchord.data.AppUpdateChecker
 import com.music.bitchord.data.LocalMediaRepository
+import com.music.bitchord.data.apple.AppleEnrichment
 import com.music.bitchord.data.sources.mornye.InstalledSflx
 import com.music.bitchord.data.sources.mornye.SflxCatalog
 import com.music.bitchord.data.listentogether.JamInviteLink
@@ -1521,7 +1522,18 @@ private fun BitChordApp(
     // the track already playing rather than only the next one.
     val syncedLyricsEnabled by AppSettings.syncedLyrics.collectAsStateWithLifecycle()
     val lyricsSources by AppSettings.lyricsSources.collectAsStateWithLifecycle()
-    LaunchedEffect(player.song?.videoId, player.durationMs, syncedLyricsEnabled, lyricsSources) {
+    LaunchedEffect(
+        player.song?.videoId,
+        player.song?.appleCatalogId,
+        player.song?.appleLookupError,
+        player.song?.isrc,
+        player.song?.contentRating,
+        player.song?.isExplicit,
+        player.song?.requiresStrictAppleIdentity(),
+        player.durationMs,
+        syncedLyricsEnabled,
+        lyricsSources,
+    ) {
         player.song?.let {
             viewModel.loadLyrics(
                 it.videoId,
@@ -1538,7 +1550,7 @@ private fun BitChordApp(
                 it.appleCatalogId,
                 it.requiresStrictAppleIdentity(),
                 it.isrc,
-                it.isExplicit == true,
+                AppleEnrichment.explicitState(it) == true,
             )
         }
     }
@@ -5310,6 +5322,7 @@ private fun BitChordApp(
                                                 artist = entity.subtitle,
                                                 thumbnailUrl = entity.artworkUrl,
                                                 appleCatalogId = entity.appleCatalogId,
+                                                appleLookupError = entity.appleLookupError,
                                                 isExplicit = entity.isExplicit,
                                                 contentRating = entity.contentRating,
                                                 isrc = entity.isrc,

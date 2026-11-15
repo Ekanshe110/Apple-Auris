@@ -181,7 +181,7 @@ class AndroidPlayerHost(context: Context) : PlayerHost {
                         com.music.bitchord.data.spotify.SpotifyAlgorithm.more(song, candidateLimit)
                     } catch (cancellation: CancellationException) {
                         throw cancellation
-                    } catch (_: Throwable) {
+                    } catch (_: Exception) {
                         emptyList()
                     }
                 } else {
@@ -194,7 +194,7 @@ class AndroidPlayerHost(context: Context) : PlayerHost {
                         youtubeRadioCandidates(song).getOrThrow()
                     } catch (cancellation: CancellationException) {
                         throw cancellation
-                    } catch (_: Throwable) {
+                    } catch (_: Exception) {
                         emptyList()
                     }
                 } else {

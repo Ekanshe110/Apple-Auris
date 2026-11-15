@@ -1,6 +1,7 @@
 package com.music.bitchord.download
 
 import com.music.bitchord.data.DebugLog as Log
+import com.music.bitchord.data.apple.AppleEnrichment
 import com.music.bitchord.data.lyrics.LyricsRepository
 import com.music.bitchord.data.lyrics.toEnhancedLrc
 import com.music.bitchord.data.lyrics.toLrc
@@ -89,7 +90,7 @@ internal object LyricsTag {
                     appleSongId = track.appleCatalogId,
                     strictApple = track.requiresStrictAppleIdentity(),
                     isrc = track.isrc,
-                    isExplicit = track.isExplicit == true,
+                    isExplicit = AppleEnrichment.explicitState(track) == true,
                 )
             }
         } catch (e: CancellationException) {

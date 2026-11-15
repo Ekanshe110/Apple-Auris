@@ -18,6 +18,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import com.music.bitchord.data.TelemetryProvenance
+import com.music.bitchord.data.apple.AppleEnrichment
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import com.music.bitchord.playback.audio.usb.UsbDirectManager
@@ -9504,7 +9505,7 @@ class PlaybackService : MediaLibraryService() {
                     appleSongId = currentSong.appleCatalogId,
                     strictApple = currentSong.requiresStrictAppleIdentity(),
                     isrc = currentSong.isrc,
-                    isExplicit = currentSong.isExplicit == true,
+                    isExplicit = AppleEnrichment.explicitState(currentSong) == true,
                 )
                 lines = found?.lines
             }

@@ -127,6 +127,39 @@ internal fun exactAppleDownloadIdentity(
     }
 }
 
+/**
+ * Whether saved provenance describes the same exact Apple recording.
+ *
+ * A filename is not an identity. In particular, a generic download can have
+ * the same artist/title stem as an Apple row, so an Apple repeat may only
+ * adopt a file whose provider, source and catalogue id all agree.
+ */
+internal fun appleDownloadProvenanceMatches(
+    expected: ExactAppleDownloadIdentity,
+    provider: String?,
+    sourceId: String?,
+    appleCatalogId: String?,
+): Boolean =
+    provider?.equals("Apple Music", ignoreCase = true) == true &&
+        sourceId == expected.sourceId &&
+        appleCatalogId == expected.appleCatalogId
+
+/**
+ * Whether an Apple stream answers the requested download rung.
+ *
+ * Lossless and Dolby requests must not silently become a lossy Apple file.
+ * Dolby may legitimately fall back to the lossless rung, but a known lossy
+ * answer is not an acceptable substitute for either bit-exact rung.
+ */
+internal fun appleDownloadQualitySupported(
+    quality: DownloadQuality,
+    stream: SourceStream,
+): Boolean {
+    if (quality.wantsAtmos && stream.format.isDolbyAtmos) return true
+    if (!quality.keepsLossless) return true
+    return !stream.belowRequest && stream.format.isLossless != false
+}
+
 /** Where a track is between "not on this device" and "on it". */
 sealed interface DownloadState {
 
@@ -942,6 +975,22 @@ object Downloads {
         }.getOrNull()
     }
 
+    /** Whether the saved record for [uri] proves the exact Apple identity. */
+    private fun savedAppleProvenanceMatches(
+        uri: Uri,
+        identity: ExactAppleDownloadIdentity,
+    ): Boolean {
+        val uriString = uri.toString()
+        return _savedMetadata.value.values.any { meta ->
+            meta.uri == uriString && appleDownloadProvenanceMatches(
+                expected = identity,
+                provider = meta.provider,
+                sourceId = meta.sourceId,
+                appleCatalogId = meta.appleCatalogId,
+            )
+        }
+    }
+
     /**
      * Record one file under every id it could be asked about.
      *
@@ -1527,6 +1576,12 @@ object Downloads {
         DownloadSession.running(id, 0f)
 
         try {
+            // The index carries the provenance an Apple repeat uses to decide
+            // whether an existing file is the exact same recording. Wait for
+            // the cold-start read when the app has been initialised; otherwise
+            // the safe answer is a fresh download, never adoption without
+            // proof.
+            if (::prefs.isInitialized) indexReady.await()
             val plan = prepare(context, song)
             // The manager is showing the row that was tapped, which for a music
             // video is the wrong title and the wrong cover for the file actually
@@ -1673,11 +1728,14 @@ object Downloads {
                 }
 
                 val name = DownloadStore.fileNameFor(track, route.extension)
-                // An Apple file found by name has no provenance yet. Adopting it
-                // would reintroduce the very old identity this mode forbids, so
-                // only an exact Apple stream may create the replacement.
-                val alreadyThere = if (route.provider == "Apple Music") {
-                    null
+                // A name is only a candidate. For Apple, it may be adopted
+                // when the saved provenance names this exact source and
+                // catalogue item; a generic file with the same stem is not
+                // this recording and must not be adopted by name.
+                val appleIdentity = route.appleIdentity
+                val alreadyThere = if (appleIdentity != null) {
+                    DownloadStore.existing(context, name)
+                        ?.takeIf { uri -> savedAppleProvenanceMatches(uri, appleIdentity) }
                 } else {
                     DownloadStore.existing(context, name)
                 }
@@ -1810,6 +1868,8 @@ object Downloads {
         val provider: String? = null,
         /** Exact provider source/config id. */
         val sourceId: String? = null,
+        /** Exact Apple identity, when this is a strict Apple route. */
+        val appleIdentity: ExactAppleDownloadIdentity? = null,
         /** Catalogue duration in seconds, when the source stated it. */
         val durationSec: Int? = null,
         val taggable: Boolean = true,
@@ -1858,6 +1918,50 @@ object Downloads {
         }
     }
 
+    /**
+     * Resolve the pinned Apple source for a download, not for playback.
+     *
+     * The ordinary resolver uses the playback quality and the playback source
+     * list. That is wrong for this route: a download must ask for the
+     * requested [DownloadQuality], and an addon whose manifest says
+     * `allowDownloads: 0` must not be contacted for bytes at all.
+     */
+    private suspend fun resolveAppleDownloadStream(
+        identity: ExactAppleDownloadIdentity,
+        quality: DownloadQuality,
+    ): SourceStream {
+        val config = SourceRegistry.config(identity.sourceId)
+        if (config?.allowDownloads == false) {
+            throw IllegalArgumentException(
+                "Apple Music source '${identity.sourceId}' does not allow downloads",
+            )
+        }
+        val source = SourceRegistry.activeForDownload()
+            .firstOrNull { it.configId == identity.sourceId }
+            ?: throw IllegalArgumentException(
+                "Apple Music source '${identity.sourceId}' is unavailable for downloads",
+            )
+        val request = SourceResolver.requestForDownload(quality)
+        val stream = try {
+            source.stream(identity.streamId, request)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "${source.displayName} failed: ${e.javaClass.simpleName}: ${e.message}")
+            null
+        } ?: throw IllegalArgumentException(
+            "Apple Music source '${identity.sourceId}' could not serve " +
+                "catalogue item '${identity.appleCatalogId}'",
+        )
+        if (!appleDownloadQualitySupported(quality, stream)) {
+            throw IllegalArgumentException(
+                "Apple Music source '${identity.sourceId}' cannot provide a " +
+                    "${quality.label} download for catalogue item '${identity.appleCatalogId}'",
+            )
+        }
+        return stream.copy(sourceConfigId = source.configId)
+    }
+
     private suspend fun routeFor(context: Context, track: Song, quality: DownloadQuality): Route {
         val sourceTrack = SourceRegistry.parseTrackKey(track.videoId)
         val sourceIsApple = sourceTrack?.first?.let(SourceRegistry::isAppleRole) == true
@@ -1882,14 +1986,7 @@ object Downloads {
                 "Apple Music download requires an exact catalogue id and " +
                     "Apple source for '${track.title}'",
             )
-            val stream = SourceResolver.resolve(
-                configId = identity.sourceId,
-                trackId = identity.streamId,
-                target = TrackMatcher.targetOf(track),
-            ) ?: throw IllegalArgumentException(
-                "Apple Music source '${identity.sourceId}' could not serve " +
-                    "catalogue item '${identity.appleCatalogId}'",
-            )
+            val stream = resolveAppleDownloadStream(identity, quality)
             if (stream.sourceConfigId != null && stream.sourceConfigId != identity.sourceId) {
                 throw IllegalArgumentException("Apple Music download identity changed while resolving '${track.title}'")
             }
@@ -1909,6 +2006,7 @@ object Downloads {
                     downloadFormat = stream.format.downloadBadge(),
                     provider = "Apple Music",
                     sourceId = identity.sourceId,
+                    appleIdentity = identity,
                     durationSec = stream.durationSec,
                     write = { sink, onProgress ->
                         ManifestFile.write(
@@ -1930,6 +2028,7 @@ object Downloads {
                 downloadFormat = stream.format.downloadBadge(),
                 provider = "Apple Music",
                 sourceId = identity.sourceId,
+                appleIdentity = identity,
                 durationSec = stream.durationSec,
                 taggable = true,
                 offlineHls = Manifest(stream.url, downloadHeaders, packaged).takeIf { packaged },

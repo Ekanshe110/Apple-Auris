@@ -82,12 +82,14 @@ import com.music.bitchord.data.model.EntityType
 import com.music.bitchord.data.settings.SearchHistory
 import com.music.bitchord.download.Downloads
 import android.util.LruCache
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.channels.BufferOverflow
@@ -221,7 +223,6 @@ internal fun appleCatalogueMatchUnavailable(
 ): Boolean {
     if (!appleModeEnabled) return false
     if (!song.appleCatalogId.isNullOrBlank()) return false
-    if (!song.localUri.isNullOrBlank()) return false
     if (song.videoId.startsWith("http://") || song.videoId.startsWith("https://")) return false
     if (song.videoId.startsWith("content://") || song.videoId.startsWith("file://")) return false
     if (song.videoId.startsWith("src:")) return false
@@ -2080,6 +2081,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 FlowStore.clearSnapshot()
                 flowAppleGrowPool.clear()
                 flowAppleGrowSeenIds.clear()
+                // The old algorithm's saved temporary playlist is not the new
+                // algorithm's playlist. Keeping the flag would make the new
+                // queue look already saved and prevent it growing again.
+                _flowSaved.value = false
                 loadHome()
                 // Error and empty are rebuildable states too. Leaving either in
                 // place meant an algorithm change could not recover a Flow
@@ -2747,27 +2752,62 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Reads all three providers concurrently, but retains a fixed publish order. */
-    private suspend fun stageAllHomeSources(): List<HomeStage> = coroutineScope {
-        val youtube = async { stageYoutubeHome() }
+    private suspend fun stageAllHomeSources(): List<HomeStage> = supervisorScope {
+        val youtube = async {
+            try {
+                stageYoutubeHome()
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (failure: Exception) {
+                HomeStage(
+                    scope = HOME_SCOPE_YOUTUBE,
+                    label = "YouTube Music",
+                    shelves = emptyList(),
+                    reason = failure.friendly(),
+                )
+            }
+        }
         val spotify = async {
-            val outcome = SpotifyHomeSource.page(homeFacet.value)
-            HomeStage(
-                scope = HOME_SCOPE_SPOTIFY,
-                label = "Spotify",
-                shelves = outcome.shelves,
-                header = outcome.header,
-                reason = outcome.reason,
-            )
+            try {
+                val outcome = SpotifyHomeSource.page(homeFacet.value)
+                HomeStage(
+                    scope = HOME_SCOPE_SPOTIFY,
+                    label = "Spotify",
+                    shelves = outcome.shelves,
+                    header = outcome.header,
+                    reason = outcome.reason,
+                )
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (failure: Exception) {
+                HomeStage(
+                    scope = HOME_SCOPE_SPOTIFY,
+                    label = "Spotify",
+                    shelves = emptyList(),
+                    reason = failure.friendly(),
+                )
+            }
         }
         val apple = async {
-            val outcome = AppleHomeSource.shelf()
-            HomeStage(
-                scope = HOME_SCOPE_APPLE,
-                label = "Apple Music",
-                shelves = listOfNotNull(outcome.getOrNull()),
-                reason = outcome.exceptionOrNull()?.friendly()
-                    ?: "Apple Music returned no recommendations",
-            )
+            try {
+                val outcome = AppleHomeSource.shelf()
+                HomeStage(
+                    scope = HOME_SCOPE_APPLE,
+                    label = "Apple Music",
+                    shelves = listOfNotNull(outcome.getOrNull()),
+                    reason = outcome.exceptionOrNull()?.friendly()
+                        ?: "Apple Music returned no recommendations",
+                )
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (failure: Exception) {
+                HomeStage(
+                    scope = HOME_SCOPE_APPLE,
+                    label = "Apple Music",
+                    shelves = emptyList(),
+                    reason = failure.friendly(),
+                )
+            }
         }
         listOf(youtube.await(), spotify.await(), apple.await())
     }
@@ -5747,21 +5787,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         relatedTracks: (suspend (Song) -> List<Song>)? = null,
     ): List<Song> {
         val buffer = if (AppSettings.blockedArtists.value.isEmpty()) 0 else 12
+        // Strict Apple rows can fail enrichment. Ask for a wider pool before
+        // resolving it, otherwise the first unresolved rows consume the whole
+        // visible limit and later valid rows never reach the queue.
+        val appleOverfetch = if (AppSettings.appleRichModeEnabled) limit * 2 else 0
         val built = FlowEngine.buildInitialQueue(
             seeds = seeds,
             likeStatuses = likeStatuses.value,
             bannedIds = FlowStore.bannedIds.value,
             skipCounts = FlowStore.skipCounts.value,
             config = FlowStore.config,
-            limit = limit + buffer,
+            limit = limit + buffer + appleOverfetch,
             genreOf = ::flowGenreOf,
             relatedTracks = relatedTracks,
-        ).withoutBlockedArtists().distinctBy { it.videoId }.take(limit)
+        ).withoutBlockedArtists().distinctBy { it.videoId }
         val enriched = AppleEnrichment.enrich(built)
         return if (AppSettings.appleRichModeEnabled) {
-            retainExactAppleRows(enriched)
+            retainExactAppleRows(enriched).take(limit)
         } else {
-            enriched
+            enriched.take(limit)
         }
     }
 
@@ -5845,7 +5889,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _flowQueue.value = UiState.Success(built)
                 if (resetSaved) _flowSaved.value = false
                 FlowStore.saveSnapshot(built, algorithm)
-            } catch (failure: Throwable) {
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (failure: Exception) {
                 if (flowBuildMayPublish(
                         generation = generation,
                         currentGeneration = flowBuildGeneration.get(),

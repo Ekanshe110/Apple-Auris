@@ -26,6 +26,8 @@ data class SearchHistoryEntity(
     val timestamp: Long = System.currentTimeMillis(),
     /** Exact Apple catalogue id for a track row, when it was enriched. */
     val appleCatalogId: String? = null,
+    /** Why an exact Apple catalogue id could not be attached. */
+    val appleLookupError: String? = null,
     /** Explicit-content state of the exact recording. */
     val isExplicit: Boolean? = null,
     /** Apple content rating, when the catalogue published one. */
@@ -49,6 +51,7 @@ data class SearchHistoryEntity(
                 artworkUrl = song.thumbnailUrl,
                 entityType = EntityType.TRACK,
                 appleCatalogId = song.appleCatalogId,
+                appleLookupError = song.appleLookupError,
                 isExplicit = song.isExplicit,
                 contentRating = song.contentRating,
                 isrc = song.isrc,

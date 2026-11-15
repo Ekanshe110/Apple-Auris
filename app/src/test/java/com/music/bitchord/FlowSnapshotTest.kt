@@ -4,7 +4,9 @@ import com.music.bitchord.data.flow.decodeFlowSnapshot
 import com.music.bitchord.data.flow.encodeFlowSnapshot
 import com.music.bitchord.data.flow.retainExactAppleRows
 import com.music.bitchord.data.flow.snapshotAlgorithmMatches
+import com.music.bitchord.data.flow.snapshotIdentityMatches
 import com.music.bitchord.data.model.Song
+import com.music.bitchord.data.settings.HomeProvider
 import com.music.bitchord.data.settings.RecommendationAlgorithm
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -98,6 +100,42 @@ class FlowSnapshotTest {
         assertTrue(snapshotAlgorithmMatches("ALL", RecommendationAlgorithm.ALL))
         assertTrue(!snapshotAlgorithmMatches(null, RecommendationAlgorithm.ALL))
         assertTrue(!snapshotAlgorithmMatches("SPOTIFY", RecommendationAlgorithm.ALL))
+    }
+
+    @Test
+    fun `snapshot rejects missing and mismatched provider identity`() {
+        assertTrue(
+            snapshotIdentityMatches(
+                storedAlgorithm = "APPLE",
+                currentAlgorithm = RecommendationAlgorithm.APPLE,
+                storedProvider = "APPLE",
+                currentProvider = HomeProvider.APPLE,
+            ),
+        )
+        assertTrue(
+            !snapshotIdentityMatches(
+                storedAlgorithm = "APPLE",
+                currentAlgorithm = RecommendationAlgorithm.APPLE,
+                storedProvider = null,
+                currentProvider = HomeProvider.APPLE,
+            ),
+        )
+        assertTrue(
+            !snapshotIdentityMatches(
+                storedAlgorithm = "APPLE",
+                currentAlgorithm = RecommendationAlgorithm.APPLE,
+                storedProvider = "YOUTUBE",
+                currentProvider = HomeProvider.APPLE,
+            ),
+        )
+        assertTrue(
+            !snapshotIdentityMatches(
+                storedAlgorithm = "SPOTIFY",
+                currentAlgorithm = RecommendationAlgorithm.APPLE,
+                storedProvider = "APPLE",
+                currentProvider = HomeProvider.APPLE,
+            ),
+        )
     }
 
     @Test

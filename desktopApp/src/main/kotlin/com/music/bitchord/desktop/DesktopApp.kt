@@ -4031,6 +4031,7 @@ fun BitChordDesktopApp(onRequestExit: () -> Unit = {}) {
                                             artist = entity.subtitle,
                                             thumbnailUrl = entity.artworkUrl,
                                             appleCatalogId = entity.appleCatalogId,
+                                            appleLookupError = entity.appleLookupError,
                                             isExplicit = entity.isExplicit,
                                             contentRating = entity.contentRating,
                                             isrc = entity.isrc,

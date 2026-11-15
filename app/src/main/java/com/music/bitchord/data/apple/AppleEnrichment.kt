@@ -51,7 +51,7 @@ object AppleEnrichment {
      * matcher must not survive the new rule, so this version is part of every
      * key and a changed matcher naturally reaches the catalogue again.
      */
-    internal const val MATCHER_VERSION = 3
+    internal const val MATCHER_VERSION = 4
 
     private val lookupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lookupGate = Semaphore(MAX_CONCURRENT_LOOKUPS)
@@ -65,6 +65,8 @@ object AppleEnrichment {
         val artist: String,
         val durationSec: Long?,
         val explicitPreference: Boolean?,
+        val ratingIdentity: String,
+        val isrc: String?,
     )
 
     private data class CachedLookup(
@@ -85,6 +87,15 @@ object AppleEnrichment {
         val isExplicit: Boolean?,
         val contentRating: String?,
         val isrc: String?,
+    )
+
+    /** Applies catalogue identity while keeping source metadata when Apple omits it. */
+    internal fun withAppleResolution(song: Song, resolution: AppleResolution): Song = song.copy(
+        appleCatalogId = resolution.id,
+        appleLookupError = null,
+        isExplicit = resolution.isExplicit ?: song.isExplicit,
+        contentRating = resolution.contentRating ?: song.contentRating,
+        isrc = resolution.isrc ?: song.isrc,
     )
 
     /**
@@ -148,13 +159,7 @@ object AppleEnrichment {
                             appleLookupError = "Apple Music catalogue not found",
                         )
                     } else {
-                        song.copy(
-                            appleCatalogId = resolution.id,
-                            appleLookupError = null,
-                            isExplicit = resolution.isExplicit,
-                            contentRating = resolution.contentRating,
-                            isrc = resolution.isrc,
-                        )
+                        withAppleResolution(song, resolution)
                     }
                 },
                 onFailure = { failure ->
@@ -184,6 +189,8 @@ object AppleEnrichment {
         artist = normalized(artist),
         durationSec = durationMillis().takeIf { it > 0 }?.div(1000),
         explicitPreference = explicitState(this),
+        ratingIdentity = explicitRatingIdentity(this),
+        isrc = normalizedIsrc(isrc),
     )
 
     /** A private, collision-resistant identity for this addon and account. */
@@ -298,7 +305,7 @@ object AppleEnrichment {
         val wantedTitle = normalizedTitle(song.title)
         if (wantedTitle.isBlank()) return null
         val wantedExplicit = explicitState(song)
-        val wantedRating = song.contentRating?.trim()?.lowercase(Locale.ROOT)
+        val wantedIsrc = normalizedIsrc(song.isrc)
 
         val matches = candidates.mapNotNull { candidate ->
             val id = candidate.appleCatalogId?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
@@ -314,20 +321,30 @@ object AppleEnrichment {
             ) {
                 return@mapNotNull null
             }
+            val candidateIsrc = normalizedIsrc(candidate.isrc)
+            // ISRC names the recording, not merely its title or artist. When
+            // both catalogue and request publish one, a mismatch is a
+            // different recording and must not be resolved by a loose match.
+            if (wantedIsrc != null && candidateIsrc != null && wantedIsrc != candidateIsrc) {
+                return@mapNotNull null
+            }
             val candidateExplicit = explicitState(candidate)
-            val candidateRating = candidate.contentRating?.trim()?.lowercase(Locale.ROOT)
-            // An explicit request never falls back to a clean master. This is
-            // a hard refusal, not a lower score: silently changing the words
-            // in the track is worse than reporting that the requested master
-            // was unavailable.
+            val candidateRating = normalizedRating(candidate.contentRating)
+            val candidateExplicitOnly = candidateExplicit == true || candidateRating == "explicit"
+            // An explicit request never falls back to a clean master, and a
+            // clean or unknown request never silently becomes explicit. These
+            // are hard refusals: changing the words in the track is worse than
+            // reporting that the requested master was unavailable.
             if (wantedExplicit == true && candidateExplicit != true) return@mapNotNull null
-            // A clean request keeps clean ahead of explicit. An unknown request
-            // prefers Apple's explicit master, which is the default the
-            // catalogue itself uses when the two editions otherwise agree.
+            if (wantedExplicit != true && candidateExplicitOnly) return@mapNotNull null
+            // Clean and unknown candidates are preferred for an unknown
+            // request; a clean request prefers a known clean candidate over an
+            // unknown one. Explicit candidates have already been refused
+            // above unless they were explicitly requested.
             val ratingPreference = when {
-                wantedExplicit == false -> if (candidateExplicit == true) 0 else 1
-                wantedRating == "clean" -> if (candidateRating == "clean") 1 else 0
-                else -> if (candidateExplicit == true) 1 else 0
+                wantedExplicit == true -> 1
+                candidateExplicit == false -> 2
+                else -> 1
             }
             AppleMatch(
                 id = id,
@@ -351,10 +368,28 @@ object AppleEnrichment {
     /** Explicit state from the row's own flag, rating, or title marker. */
     internal fun explicitState(song: Song): Boolean? = when {
         song.isExplicit != null -> song.isExplicit
-        song.contentRating?.trim()?.equals("explicit", ignoreCase = true) == true -> true
-        song.contentRating?.trim()?.equals("clean", ignoreCase = true) == true -> false
+        normalizedRating(song.contentRating) == "explicit" -> true
+        normalizedRating(song.contentRating) == "clean" -> false
         EXPLICIT_TITLE_MARKER.containsMatchIn(song.title) -> true
         else -> null
+    }
+
+    /** A stable rating identity for cache keys and match decisions. */
+    internal fun normalizedRating(value: String?): String? =
+        value?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() }
+
+    /** ISRC formatting is not identity: punctuation and case do not matter. */
+    internal fun normalizedIsrc(value: String?): String? =
+        value?.trim()?.takeIf { it.isNotEmpty() }?.let(::normalized)
+
+    /** Distinguishes clean, explicit, and unknown rating states in cache keys. */
+    internal fun explicitRatingIdentity(song: Song): String {
+        val state = when (explicitState(song)) {
+            true -> "explicit"
+            false -> "clean"
+            null -> "unknown"
+        }
+        return "$state|${normalizedRating(song.contentRating) ?: "unknown"}"
     }
 
     /** Whole seconds available from [Song]'s current `M:SS` duration text. */

@@ -1,7 +1,13 @@
 package com.music.bitchord
 
+import com.music.bitchord.data.settings.DownloadQuality
+import com.music.bitchord.data.sources.SourceStream
+import com.music.bitchord.data.sources.StreamFormat
 import com.music.bitchord.download.AudioIdentity
+import com.music.bitchord.download.ExactAppleDownloadIdentity
 import com.music.bitchord.download.audioIdentityMatches
+import com.music.bitchord.download.appleDownloadProvenanceMatches
+import com.music.bitchord.download.appleDownloadQualitySupported
 import com.music.bitchord.download.exactAppleDownloadIdentity
 import com.music.bitchord.playback.AudioCache
 import org.junit.Assert.assertEquals
@@ -54,6 +60,44 @@ class AppleAudioProvenanceTest {
         assertTrue(
             AudioCache.isAppleCacheUsable(
                 cachedDurationMs = 183_000L,
+                cachedByteLength = 4_000_000L,
+                descriptor = descriptor,
+            ),
+        )
+    }
+
+    @Test
+    fun `cache validation ignores the originating row id`() {
+        val descriptor = AudioCache.AppleStreamDescriptor(
+            sourceId = "apple-config",
+            appleCatalogId = "catalog-183",
+            originalVideoId = "another-spotify-row",
+            durationMs = 183_000L,
+            byteLength = 4_000_000L,
+        )
+
+        assertTrue(
+            AudioCache.isAppleCacheUsable(
+                cachedDurationMs = 183_000L,
+                cachedByteLength = 4_000_000L,
+                descriptor = descriptor,
+            ),
+        )
+    }
+
+    @Test
+    fun `cache validation admits an unstated expected duration`() {
+        val descriptor = AudioCache.AppleStreamDescriptor(
+            sourceId = "apple-config",
+            appleCatalogId = "catalog-183",
+            originalVideoId = "spotify-row",
+            durationMs = 0L,
+            byteLength = 4_000_000L,
+        )
+
+        assertTrue(
+            AudioCache.isAppleCacheUsable(
+                cachedDurationMs = 72_000L,
                 cachedByteLength = 4_000_000L,
                 descriptor = descriptor,
             ),
@@ -124,5 +168,76 @@ class AppleAudioProvenanceTest {
         )
 
         assertFalse(audioIdentityMatches(expected, legacy))
+    }
+
+    @Test
+    fun `Apple adoption requires the exact source and catalogue id`() {
+        val expected = ExactAppleDownloadIdentity(
+            sourceId = "apple-config",
+            streamId = "catalog-183",
+            appleCatalogId = "catalog-183",
+            originalVideoId = "spotify-row",
+        )
+
+        assertTrue(
+            appleDownloadProvenanceMatches(
+                expected = expected,
+                provider = "Apple Music",
+                sourceId = "apple-config",
+                appleCatalogId = "catalog-183",
+            ),
+        )
+        assertFalse(
+            appleDownloadProvenanceMatches(
+                expected = expected,
+                provider = "Apple Music",
+                sourceId = "other-config",
+                appleCatalogId = "catalog-183",
+            ),
+        )
+        assertFalse(
+            appleDownloadProvenanceMatches(
+                expected = expected,
+                provider = "YouTube",
+                sourceId = "apple-config",
+                appleCatalogId = "catalog-183",
+            ),
+        )
+        assertFalse(
+            appleDownloadProvenanceMatches(
+                expected = expected,
+                provider = "Apple Music",
+                sourceId = "apple-config",
+                appleCatalogId = "catalog-999",
+            ),
+        )
+    }
+
+    @Test
+    fun `Apple lossless request rejects a lossy answer`() {
+        assertFalse(
+            appleDownloadQualitySupported(
+                DownloadQuality.LOSSLESS,
+                SourceStream(url = "https://example.test/mp3", format = StreamFormat(codec = "mp3")),
+            ),
+        )
+        assertTrue(
+            appleDownloadQualitySupported(
+                DownloadQuality.LOSSLESS,
+                SourceStream(url = "https://example.test/flac", format = StreamFormat(codec = "flac")),
+            ),
+        )
+        assertTrue(
+            appleDownloadQualitySupported(
+                DownloadQuality.HIGH,
+                SourceStream(url = "https://example.test/mp3", format = StreamFormat(codec = "mp3")),
+            ),
+        )
+        assertTrue(
+            appleDownloadQualitySupported(
+                DownloadQuality.DOLBY,
+                SourceStream(url = "https://example.test/eac3", format = StreamFormat(codec = "eac3")),
+            ),
+        )
     }
 }

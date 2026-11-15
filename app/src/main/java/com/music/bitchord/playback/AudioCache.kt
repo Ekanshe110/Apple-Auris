@@ -622,21 +622,33 @@ object AudioCache {
             val provenanceMatches =
                 metadata.get(META_SOURCE_ID, null as String?) == sourceId &&
                     metadata.get(META_APPLE_CATALOG_ID, null as String?) == catalogId &&
-                    metadata.get(META_ORIGINAL_VIDEO_ID, null as String?) == originalVideoId &&
                     metadata.get(META_PROVIDER, null as String?) == APPLE_PROVIDER
+            val expectedDurationMs = uri.getQueryParameter("d")
+                ?.toDoubleOrNull()
+                ?.times(1_000.0)
+                ?.toLong()
+                ?.takeIf { it > 0L }
+                ?: 0L
             val descriptor = AppleStreamDescriptor(
                 sourceId = sourceId,
                 appleCatalogId = catalogId,
                 originalVideoId = originalVideoId,
-                durationMs = 0L,
+                durationMs = expectedDurationMs,
                 byteLength = recordedLength,
             )
             if (!provenanceMatches ||
                 !isAppleCacheUsable(cachedDuration, cachedLength, descriptor)
             ) {
                 val removed = runCatching { cache.removeResource(key) }.isSuccess
-                if (removed) appleCacheKeys.remove(key)
-                appleValidationStates[key] = AppleValidationState.REJECTED
+                if (removed) {
+                    appleCacheKeys.remove(key)
+                    // The bad entry is gone. A later write may recreate the
+                    // same catalogue key, and that fresh entry must be able
+                    // to validate again instead of inheriting this verdict.
+                    appleValidationStates.remove(key)
+                } else {
+                    appleValidationStates[key] = AppleValidationState.REJECTED
+                }
                 TrackLog.d(
                     TAG,
                     "rejected stale Apple cache $key (${cachedDuration / 1000}s/$cachedLength bytes, " +

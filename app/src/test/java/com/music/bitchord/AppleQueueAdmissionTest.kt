@@ -46,6 +46,15 @@ class AppleQueueAdmissionTest {
     }
 
     @Test
+    fun `generic downloaded row still needs an exact Apple identity`() {
+        val rows = listOf(
+            song("youtube:generic", localUri = "content://media/audio/1"),
+        )
+
+        assertEquals(emptyList<Song>(), playableAppleSongs(rows, appleModeEnabled = true))
+    }
+
+    @Test
     fun `non Apple mode keeps every row`() {
         val rows = listOf(song("spotify:missing"))
 

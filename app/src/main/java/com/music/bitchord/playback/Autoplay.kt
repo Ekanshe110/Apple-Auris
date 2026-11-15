@@ -95,7 +95,14 @@ suspend fun youtubeSeedFor(song: Song): String? = resolveYoutubeSeed(song).getOr
  * answered instead of mistaking the error for an empty station.
  */
 internal suspend fun resolveYoutubeSeed(song: Song): Result<String?> {
-    if (SourceRegistry.parseTrackKey(song.videoId) == null) return Result.success(song.videoId)
+    // A normal YouTube id can seed YouTube radio directly. A Spotify id
+    // cannot: it names a Spotify recording and YouTube's radio endpoint
+    // would receive an id it does not know.
+    if (SourceRegistry.parseTrackKey(song.videoId) == null &&
+        !song.videoId.startsWith("spotify:")
+    ) {
+        return Result.success(song.videoId)
+    }
 
     val target = TrackMatcher.targetOf(song)
     val queries = TrackMatcher.queries(target)
@@ -211,7 +218,7 @@ private suspend fun <T> captureSourceFailure(block: suspend () -> Result<T>): Re
         block()
     } catch (cancellation: CancellationException) {
         throw cancellation
-    } catch (failure: Throwable) {
+    } catch (failure: Exception) {
         Result.failure(failure)
     }
 
@@ -237,13 +244,16 @@ suspend fun loadAutoplayTracks(
     val algorithm = AppSettings.recommendationAlgorithm.value
     val excluded = existing.mapTo(HashSet()) { it.videoId }
     val sourceFailures = mutableListOf<Throwable>()
+    // Strict Apple mode resolves the pool after asking each source. Ask for a
+    // wider set first, so an unresolved early row cannot shrink the answer.
+    val candidateLimit = if (AppSettings.appleRichModeEnabled) limit * 3 else limit
 
     val spotifyResult = if (algorithm.includes(RecommendationAlgorithm.SPOTIFY)) {
         captureSourceFailure {
             Result.success(
                 com.music.bitchord.data.spotify.SpotifyHomeSource.autoplayTracks(
                     exclude = excluded,
-                    limit = limit,
+                    limit = candidateLimit,
                     seed = seedSong,
                     station = station,
                 ),
@@ -269,7 +279,7 @@ suspend fun loadAutoplayTracks(
 
     val appleResult = if (algorithm.includes(RecommendationAlgorithm.APPLE)) {
         captureSourceFailure {
-            AppleHomeSource.tracks(appleRecommendationPoolSize(limit))
+            AppleHomeSource.tracks(appleRecommendationPoolSize(candidateLimit))
         }
     } else {
         Result.success(emptyList())
@@ -281,7 +291,7 @@ suspend fun loadAutoplayTracks(
     val unseenAppleCandidates = selectUnseenAppleCandidates(
         pool = appleCandidates,
         existing = existing,
-        limit = limit,
+        limit = candidateLimit,
     )
 
     // All mode takes turns between the three feeds. Concatenating them would
@@ -289,7 +299,7 @@ suspend fun loadAutoplayTracks(
     // algorithms with no representation at all.
     val candidates = interleaveRecommendationCandidates(
         groups = listOf(spotifyCandidates, youtubeCandidates, unseenAppleCandidates),
-        limit = limit,
+        limit = candidateLimit,
     )
 
     // A source failure must not look like an empty station. If no source
@@ -298,24 +308,26 @@ suspend fun loadAutoplayTracks(
         firstRecommendationFailure(sourceFailures)?.let { return Result.failure(it) }
     }
 
-    var extra = QueueBuilder.extend(existing, candidates.distinctBy { it.videoId }, limit)
-        .filterNot(AppSettings::isSongBlocked)
-    if (extra.isEmpty()) {
-        firstRecommendationFailure(sourceFailures)?.let { return Result.failure(it) }
-        return Result.success(emptyList())
-    }
-
     // Apple mode keeps Apple as the audio backend. Rows without an exact
     // Apple identity are dropped rather than silently falling through to a
-    // generic catalogue. If strict resolution rejects every row, report that
-    // failure instead of returning a successful but empty batch.
-    if (AppSettings.appleRichModeEnabled) {
-        val enriched = AppleEnrichment.enrich(extra)
+    // generic catalogue. Resolve the wider pool first, then take the visible
+    // limit, so an unresolved early row cannot shrink the answer.
+    val resolvedCandidates = if (AppSettings.appleRichModeEnabled) {
+        val enriched = AppleEnrichment.enrich(candidates)
         val resolved = enriched
             .filter { !it.appleCatalogId.isNullOrBlank() }
             .distinctBy { it.appleCatalogId }
         if (resolved.isEmpty()) return Result.failure(strictAppleResolutionFailure(enriched))
-        extra = resolved
+        resolved.take(limit)
+    } else {
+        candidates.distinctBy { it.videoId }.take(limit)
+    }
+
+    val extra = QueueBuilder.extend(existing, resolvedCandidates, limit)
+        .filterNot(AppSettings::isSongBlocked)
+    if (extra.isEmpty()) {
+        firstRecommendationFailure(sourceFailures)?.let { return Result.failure(it) }
+        return Result.success(emptyList())
     }
 
     return Result.success(extra.map {

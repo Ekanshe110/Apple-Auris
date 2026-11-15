@@ -301,6 +301,103 @@ class AppleRichModeTest {
     }
 
     @Test
+    fun `candidate with a different ISRC is rejected`() {
+        val wanted = song(isrc = "USRC17607839")
+        val candidate = song(
+            id = "src:apple::123",
+            appleId = "123",
+            isrc = "USRC17607840",
+        )
+
+        assertNull(AppleEnrichment.exactAppleId(wanted, listOf(candidate)))
+    }
+
+    @Test
+    fun `candidate with equivalent ISRC formatting still matches`() {
+        val wanted = song(isrc = "US-RC-176-078-39")
+        val candidate = song(
+            id = "src:apple::123",
+            appleId = "123",
+            isrc = "usrc17607839",
+        )
+
+        assertEquals("123", AppleEnrichment.exactAppleId(wanted, listOf(candidate)))
+    }
+
+    @Test
+    fun `clean request refuses an explicit-only Apple candidate`() {
+        val wanted = song(isExplicit = false, contentRating = "clean")
+        val candidate = song(
+            id = "src:apple::explicit",
+            appleId = "explicit",
+            isExplicit = true,
+            contentRating = "explicit",
+        )
+
+        assertNull(AppleEnrichment.exactAppleId(wanted, listOf(candidate)))
+    }
+
+    @Test
+    fun `unknown request prefers clean candidate over explicit candidate`() {
+        val wanted = song()
+        val clean = song(
+            id = "src:apple::clean",
+            appleId = "clean",
+            isExplicit = false,
+            contentRating = "clean",
+        )
+        val explicit = song(
+            id = "src:apple::explicit",
+            appleId = "explicit",
+            isExplicit = true,
+            contentRating = "explicit",
+        )
+
+        assertEquals("clean", AppleEnrichment.exactAppleId(wanted, listOf(explicit, clean)))
+    }
+
+    @Test
+    fun `unknown request never selects an explicit-only candidate`() {
+        val wanted = song()
+        val explicit = song(
+            id = "src:apple::explicit",
+            appleId = "explicit",
+            isExplicit = true,
+            contentRating = "explicit",
+        )
+
+        assertNull(AppleEnrichment.exactAppleId(wanted, listOf(explicit)))
+    }
+
+    @Test
+    fun `Apple resolution preserves source metadata when Apple omits it`() {
+        val source = song(
+            isExplicit = false,
+            contentRating = "clean",
+            isrc = "USRC17607839",
+        )
+        val resolved = AppleEnrichment.withAppleResolution(
+            source,
+            AppleEnrichment.AppleResolution(
+                id = "123",
+                isExplicit = null,
+                contentRating = null,
+                isrc = null,
+            ),
+        )
+
+        assertEquals("123", resolved.appleCatalogId)
+        assertEquals(false, resolved.isExplicit)
+        assertEquals("clean", resolved.contentRating)
+        assertEquals("USRC17607839", resolved.isrc)
+    }
+
+    @Test
+    fun `Apple matcher version changes with rating rules`() {
+        assertEquals(4, AppleEnrichment.MATCHER_VERSION)
+    }
+
+    @Test
     fun `exact Apple match carries explicit rating and ISRC`() {
         val wanted = song(isExplicit = true, contentRating = "explicit")
         val candidate = song(

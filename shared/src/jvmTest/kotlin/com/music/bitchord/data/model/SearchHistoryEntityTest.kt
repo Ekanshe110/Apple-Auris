@@ -17,6 +17,7 @@ class SearchHistoryEntityTest {
             thumbnailUrl = "https://art/a.jpg",
             isExplicit = false,
             appleCatalogId = "catalog-id",
+            appleLookupError = "Apple catalogue match unavailable",
             contentRating = "clean",
             isrc = "USRC17607839",
         )
@@ -26,6 +27,7 @@ class SearchHistoryEntityTest {
         assertEquals(EntityType.TRACK, entity.entityType)
         assertEquals(false, entity.isExplicit)
         assertEquals("catalog-id", entity.appleCatalogId)
+        assertEquals("Apple catalogue match unavailable", entity.appleLookupError)
         assertEquals("clean", entity.contentRating)
         assertEquals("USRC17607839", entity.isrc)
     }
@@ -39,6 +41,7 @@ class SearchHistoryEntityTest {
             artworkUrl = null,
             entityType = EntityType.TRACK,
             isExplicit = true,
+            appleLookupError = "Apple catalogue match unavailable",
             contentRating = "explicit",
             isrc = "USRC17607839",
         )
@@ -47,6 +50,7 @@ class SearchHistoryEntityTest {
         val restored = Json.decodeFromString(SearchHistoryEntity.serializer(), encoded)
 
         assertEquals(true, restored.isExplicit)
+        assertEquals("Apple catalogue match unavailable", restored.appleLookupError)
         assertEquals("explicit", restored.contentRating)
         assertEquals("USRC17607839", restored.isrc)
     }
@@ -60,6 +64,7 @@ class SearchHistoryEntityTest {
         val restored = Json.decodeFromString(SearchHistoryEntity.serializer(), legacy)
 
         assertNull(restored.isExplicit)
+        assertNull(restored.appleLookupError)
         assertNull(restored.contentRating)
         assertNull(restored.isrc)
     }

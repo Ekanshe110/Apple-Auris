@@ -8,6 +8,7 @@ import com.music.bitchord.data.flow.FlowMood
 import com.music.bitchord.data.flow.FlowTuner
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.data.settings.AppSettings
+import com.music.bitchord.data.settings.HomeProvider
 import com.music.bitchord.data.settings.RecommendationAlgorithm
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,6 +35,7 @@ object FlowStore {
     private const val KEY_SKIPS = "flow_skips"
     private const val KEY_SEED_CURSOR = "flow_seed_cursor"
     private const val KEY_FLOW_ALGORITHM = "flow_algorithm"
+    private const val KEY_FLOW_PROVIDER = "flow_provider"
 
     private const val MAX_BANNED = 200
     private const val MAX_SKIPS = 300
@@ -105,6 +107,7 @@ object FlowStore {
             .putInt(KEY_FLOW_SNAPSHOT_VERSION, SNAPSHOT_VERSION)
             .putInt(KEY_FLOW_SNAPSHOT_APP, BuildConfig.VERSION_CODE)
             .putString(KEY_FLOW_ALGORITHM, algorithm.name)
+            .putString(KEY_FLOW_PROVIDER, AppSettings.homeProvider.value.name)
             .apply()
     }
 
@@ -131,10 +134,18 @@ object FlowStore {
         }
         val storedAlgorithm = prefs.getString(KEY_FLOW_ALGORITHM, null)
         val currentAlgorithm = AppSettings.recommendationAlgorithm.value
-        // A snapshot without an algorithm cannot be proven to match the
-        // current recommendation rules. Restoring it would restore a mix made
-        // by rules the app can no longer name.
-        if (!snapshotAlgorithmMatches(storedAlgorithm, currentAlgorithm)) {
+        val storedProvider = prefs.getString(KEY_FLOW_PROVIDER, null)
+        val currentProvider = AppSettings.homeProvider.value
+        // A snapshot without an algorithm or content provider cannot be proven
+        // to match the current discovery and playback rules. Restoring it would
+        // restore rows whose exact Apple identity may no longer be valid.
+        if (!snapshotIdentityMatches(
+                storedAlgorithm = storedAlgorithm,
+                currentAlgorithm = currentAlgorithm,
+                storedProvider = storedProvider,
+                currentProvider = currentProvider,
+            )
+        ) {
             clearSnapshot()
             return null
         }
@@ -154,6 +165,7 @@ object FlowStore {
             .remove(KEY_FLOW_SNAPSHOT_VERSION)
             .remove(KEY_FLOW_SNAPSHOT_APP)
             .remove(KEY_FLOW_ALGORITHM)
+            .remove(KEY_FLOW_PROVIDER)
             .apply()
     }
 
@@ -287,6 +299,16 @@ internal fun snapshotAlgorithmMatches(
     stored: String?,
     current: RecommendationAlgorithm,
 ): Boolean = stored == current.name
+
+/** Whether a stored snapshot matches both discovery and catalogue rules. */
+internal fun snapshotIdentityMatches(
+    storedAlgorithm: String?,
+    currentAlgorithm: RecommendationAlgorithm,
+    storedProvider: String?,
+    currentProvider: HomeProvider,
+): Boolean =
+    snapshotAlgorithmMatches(storedAlgorithm, currentAlgorithm) &&
+        storedProvider == currentProvider.name
 
 /** Keeps only rows with an exact Apple id, without replacing that id. */
 internal fun retainExactAppleRows(songs: List<Song>): List<Song> =

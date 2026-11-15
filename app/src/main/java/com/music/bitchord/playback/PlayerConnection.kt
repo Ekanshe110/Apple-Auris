@@ -257,6 +257,25 @@ private fun Bundle.artistsFromBundle(): List<ArtistRef> {
 
 private const val ARTISTS_NAMES = "artistNames"
 private const val ARTISTS_IDS = "artistIds"
+private const val EXPLICIT_STATE = "explicitState"
+
+/** Read the explicit tri-state, including bundles written by older builds. */
+private fun Bundle.explicitStateFromBundle(): Boolean? =
+    when (getString(EXPLICIT_STATE)) {
+        "1" -> true
+        "0" -> false
+        "" -> null
+        else -> get("isExplicit") as? Boolean
+    }
+
+/** Read Media3's explicit tri-state, including items written by older builds. */
+private fun Bundle.explicitStateFromExtras(): Boolean? =
+    when (getString(EXTRA_EXPLICIT_STATE)) {
+        "1" -> true
+        "0" -> false
+        "" -> null
+        else -> get(EXTRA_EXPLICIT) as? Boolean
+    }
 
 fun Song.toSongBundle(): Bundle = bundleOf(
     "videoId" to videoId,
@@ -279,7 +298,16 @@ fun Song.toSongBundle(): Bundle = bundleOf(
     "playbackSource" to playbackSource,
     "playbackSourceType" to playbackSourceType?.name,
     "playbackSourceId" to playbackSourceId,
-    "isExplicit" to (isExplicit ?: false),
+    // Preserve unknown explicit state. The old boolean-only field could not
+    // tell "clean" from "not labelled"; the marker can.
+    "explicitState" to when (isExplicit) {
+        true -> "1"
+        false -> "0"
+        null -> ""
+    },
+    "isExplicit" to isExplicit,
+    "appleCatalogId" to appleCatalogId,
+    "appleLookupError" to appleLookupError,
     "contentRating" to contentRating,
     "isrc" to isrc,
     // `bundleOf` has no overload for a list of strings, so the two halves of
@@ -311,7 +339,9 @@ fun songFromBundle(b: Bundle): Song = Song(
     playbackSource = b.getString("playbackSource"),
     playbackSourceType = b.getString("playbackSourceType")?.let { runCatching { com.music.bitchord.data.model.PlaybackSourceType.valueOf(it) }.getOrNull() },
     playbackSourceId = b.getString("playbackSourceId"),
-    isExplicit = if (b.containsKey("isExplicit")) b.getBoolean("isExplicit") else null,
+    isExplicit = b.explicitStateFromBundle(),
+    appleCatalogId = b.getString("appleCatalogId"),
+    appleLookupError = b.getString("appleLookupError"),
     contentRating = b.getString("contentRating"),
     isrc = b.getString("isrc"),
 )
@@ -477,8 +507,7 @@ fun MediaItem.toSong() = Song(
     artists = mediaMetadata.extras?.artistsFromBundle() ?: emptyList(),
     albumId = mediaMetadata.extras?.getString(EXTRA_ALBUM_ID),
     albumName = mediaMetadata.albumTitle?.toString(),
-    isExplicit = mediaMetadata.extras?.takeIf { it.containsKey(EXTRA_EXPLICIT) }
-        ?.getBoolean(EXTRA_EXPLICIT),
+    isExplicit = mediaMetadata.extras?.explicitStateFromExtras(),
     isVideo = mediaMetadata.extras?.getBoolean(EXTRA_IS_VIDEO) == true,
     isVideoOrigin = mediaMetadata.extras?.getBoolean(EXTRA_VIDEO_ORIGIN) == true ||
         mediaMetadata.extras?.getBoolean(EXTRA_IS_VIDEO) == true,
@@ -605,6 +634,7 @@ internal const val EXTRA_APPLE_LOOKUP_ERROR = "bitchord.appleLookupError"
  */
 private const val EXTRA_DURATION = "bitchord.durationText"
 private const val EXTRA_EXPLICIT = "bitchord.explicit"
+private const val EXTRA_EXPLICIT_STATE = "bitchord.explicitState"
 private const val EXTRA_CONTENT_RATING = "bitchord.contentRating"
 private const val EXTRA_ISRC = "bitchord.isrc"
 private const val EXTRA_IS_VIDEO = "bitchord.isVideo"
@@ -1051,6 +1081,11 @@ fun Song.toMediaItem(parentBrowseId: String? = null, playLocalFile: Boolean = tr
                             EXTRA_ALBUM_ID to albumId,
                             EXTRA_SET_VIDEO_ID to setVideoId,
                             EXTRA_EXPLICIT to isExplicit,
+                            EXTRA_EXPLICIT_STATE to when (isExplicit) {
+                                true -> "1"
+                                false -> "0"
+                                null -> ""
+                            },
                             EXTRA_CONTENT_RATING to contentRating,
                             EXTRA_ISRC to isrc,
                             EXTRA_IS_VIDEO to isVideo,
