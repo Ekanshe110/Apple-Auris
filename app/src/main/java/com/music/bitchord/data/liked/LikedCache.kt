@@ -153,6 +153,7 @@ fun encodeLikedRows(songs: List<Song>): String =
             s.localUri.orEmpty(), s.downloadFormat.orEmpty(),
             s.appleCatalogId.orEmpty(), s.appleLookupError.orEmpty(),
             s.contentRating.orEmpty(), s.isrc.orEmpty(),
+            if (s.atmosAvailable) "1" else "",
         ).joinToString("\u001f") { it.replace("\u001e", " ").replace("\u001f", " ") }
     }
 
@@ -183,6 +184,7 @@ fun decodeLikedRows(text: String): List<Song> {
             appleLookupError = f.getOrNull(10)?.takeIf { it.isNotBlank() },
             contentRating = f.getOrNull(11)?.takeIf { it.isNotBlank() },
             isrc = f.getOrNull(12)?.takeIf { it.isNotBlank() },
+            atmosAvailable = f.getOrNull(13) == "1",
         )
     }
 }

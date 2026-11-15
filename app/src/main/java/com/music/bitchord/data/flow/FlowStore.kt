@@ -338,6 +338,7 @@ fun encodeFlowSnapshot(songs: List<Song>): String =
                 null -> ""
             },
             s.contentRating.orEmpty(), s.isrc.orEmpty(),
+            if (s.atmosAvailable) "1" else "",
         ).joinToString("\u001f") { it.replace("\u001e", " ").replace("\u001f", " ") }
     }
 
@@ -362,6 +363,7 @@ fun decodeFlowSnapshot(text: String): List<Song> {
             },
             contentRating = f.getOrNull(8)?.takeIf { it.isNotBlank() },
             isrc = f.getOrNull(9)?.takeIf { it.isNotBlank() },
+            atmosAvailable = f.getOrNull(10) == "1",
         )
     }
 }
