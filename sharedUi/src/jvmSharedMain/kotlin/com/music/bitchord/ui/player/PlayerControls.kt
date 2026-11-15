@@ -357,6 +357,10 @@ internal fun PlaybackQualityLabel(
     // "Loading lossless" only appears when a lossless fetch is actually in
     // flight, not on every buffering YouTube track.
     val effectiveQuality = if (metered == true) cellularQuality else wifiQuality
+    // The Dolby rung asks for Atmos first and walks the lossless ladder below
+    // it, so its unresolved fallback is still a lossless wait.
+    val losslessRequested =
+        effectiveQuality == AudioQuality.LOSSLESS || effectiveQuality == AudioQuality.DOLBY
     // Whether a module is still racing YouTube for this exact track — see
     // [NerdStats.racingLossless]. YouTube can win that race and already be
     // playing while the module lookup is still running detached, and the badge
@@ -372,7 +376,7 @@ internal fun PlaybackQualityLabel(
         LosslessOrStats(
             isLoading = isLoading,
             stillRacing = song.videoId in racingLossless,
-            losslessRequested = effectiveQuality == AudioQuality.LOSSLESS,
+            losslessRequested = losslessRequested,
             effectiveQuality = effectiveQuality,
             nerdStats = nerdStats,
             modifier = Modifier
