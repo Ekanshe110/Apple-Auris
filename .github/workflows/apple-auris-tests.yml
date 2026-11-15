@@ -51,7 +51,6 @@ jobs:
       - name: Run Android unit tests
         run: |
           cat > "$RUNNER_TEMP/apple-auris-test-filters.gradle" <<'GRADLE'
-          gradle.startParameter.isBuildCacheEnabled = true
           allprojects {
             tasks.withType(org.gradle.api.tasks.testing.Test).configureEach {
               filter {
