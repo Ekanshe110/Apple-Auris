@@ -175,6 +175,7 @@ internal fun AddonLibraryItem.toLikedSong(): Song? {
         },
         contentRating = normalizedRating,
         isrc = isrc?.trim()?.takeIf { it.isNotEmpty() },
+        atmosAvailable = atmos == true,
     )
 }
 
