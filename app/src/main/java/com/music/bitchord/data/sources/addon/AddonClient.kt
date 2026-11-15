@@ -64,6 +64,8 @@ class AddonClient(
     private val searches = SharedCalls<AddonSearchResponse>(SEARCH_TTL_MS, calls, ::logReuse)
     private val recommendationFeeds =
         SharedCalls<AddonRecommendationsResponse>(SEARCH_TTL_MS, calls, ::logReuse)
+    private val homeFeeds =
+        SharedCalls<AddonHomeResponse>(SEARCH_TTL_MS, calls, ::logReuse)
     private val streams = SharedCalls<AddonStream>(STREAM_TTL_MS, calls, ::logReuse)
     private val libraryPages = SharedCalls<AddonLibraryPage>(LIBRARY_TTL_MS, calls, ::logReuse)
 
@@ -469,7 +471,7 @@ class AddonClient(
     suspend fun homeShelves(limit: Int = 20): Result<List<AddonHomeShelf>> {
         if (limit <= 0) return Result.success(emptyList())
         val params = mapOf("limit" to limit.coerceAtMost(50).toString())
-        return recommendationFeeds.get(
+        return homeFeeds.get(
             key = "home:${params.toString()}",
             describe = { "▶ addon home(${redact(baseUrl)}) limit=$limit" },
         ) {
