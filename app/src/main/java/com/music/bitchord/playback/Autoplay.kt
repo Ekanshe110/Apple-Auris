@@ -14,9 +14,29 @@ import com.music.bitchord.data.sources.SourceRegistry
 import com.music.bitchord.data.sources.TrackMatcher
 import com.music.bitchord.playback.QueueCoordinator.asQueueEntry
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 
 /** Most AutoPlay-suggested tracks kept queued ahead of the current one at once. */
 const val MAX_QUEUED_AUTOPLAY = 10
+
+/**
+ * Cached Apple recommendation pool per seed, so tapping the 5th/8th AutoPlay
+ * row does not re-fetch the same upstream answer. The pool is refreshed after
+ * a few minutes or when it runs dry.
+ */
+private data class AppleAutoplayCache(
+    val songs: List<Song>,
+    val fetchedAt: Long,
+)
+
+private val appleAutoplayCache = mutableMapOf<String, AppleAutoplayCache>()
+private const val APPLE_AUTOCACHE_TTL_MS = 5 * 60 * 1000L
+
+internal fun clearAppleAutoplayCache() {
+    appleAutoplayCache.clear()
+}
 
 /**
  * Whether AutoPlay is on for the music this device is playing.
@@ -169,6 +189,24 @@ internal fun appleRecommendationPoolSize(limit: Int): Int = when {
 }
 
 /**
+ * Apple candidates for AutoPlay, cached per seed so repeated top-ups do not
+ * re-hit the server for the same pool.
+ */
+private suspend fun appleAutoplayPool(seed: Song, limit: Int): Result<List<Song>> {
+    val seedKey = seed.videoId
+    val now = System.currentTimeMillis()
+    val cached = appleAutoplayCache[seedKey]
+    if (cached != null && now - cached.fetchedAt < APPLE_AUTOCACHE_TTL_MS && cached.songs.isNotEmpty()) {
+        return Result.success(cached.songs)
+    }
+    return captureSourceFailure {
+        AppleHomeSource.tracks(appleRecommendationPoolSize(limit))
+    }.onSuccess { tracks ->
+        appleAutoplayCache[seedKey] = AppleAutoplayCache(tracks, now)
+    }
+}
+
+/**
  * Selects unseen Apple rows from a larger feed pool.
  *
  * Apple's recommendation feed can repeat the same head rows on every request.
@@ -248,46 +286,40 @@ suspend fun loadAutoplayTracks(
     // wider set first, so an unresolved early row cannot shrink the answer.
     val candidateLimit = if (AppSettings.appleRichModeEnabled) limit * 3 else limit
 
-    val spotifyResult = if (algorithm.includes(RecommendationAlgorithm.SPOTIFY)) {
-        captureSourceFailure {
-            Result.success(
-                com.music.bitchord.data.spotify.SpotifyHomeSource.autoplayTracks(
-                    exclude = excluded,
-                    limit = candidateLimit,
-                    seed = seedSong,
-                    station = station,
-                ),
-            )
+    val (spotifyCandidates, youtubeCandidates, appleCandidates) = coroutineScope {
+        val spotify = async {
+            if (!algorithm.includes(RecommendationAlgorithm.SPOTIFY)) return@async emptyList<Song>()
+            captureSourceFailure {
+                Result.success(
+                    com.music.bitchord.data.spotify.SpotifyHomeSource.autoplayTracks(
+                        exclude = excluded,
+                        limit = candidateLimit,
+                        seed = seedSong,
+                        station = station,
+                    ),
+                )
+            }.getOrElse {
+                sourceFailures += it
+                emptyList()
+            }
         }
-    } else {
-        Result.success(emptyList())
-    }
-    val spotifyCandidates = spotifyResult.getOrElse {
-        sourceFailures += it
-        emptyList()
+        val youtube = async {
+            if (!algorithm.includes(RecommendationAlgorithm.YOUTUBE)) return@async emptyList<Song>()
+            youtubeRadioCandidates(seedSong).getOrElse {
+                sourceFailures += it
+                emptyList()
+            }
+        }
+        val apple = async {
+            if (!algorithm.includes(RecommendationAlgorithm.APPLE)) return@async emptyList<Song>()
+            appleAutoplayPool(seedSong, candidateLimit).getOrElse {
+                sourceFailures += it
+                emptyList()
+            }
+        }
+        awaitAll(spotify, youtube, apple)
     }
 
-    val youtubeResult = if (algorithm.includes(RecommendationAlgorithm.YOUTUBE)) {
-        youtubeRadioCandidates(seedSong)
-    } else {
-        Result.success(emptyList())
-    }
-    val youtubeCandidates = youtubeResult.getOrElse {
-        sourceFailures += it
-        emptyList()
-    }
-
-    val appleResult = if (algorithm.includes(RecommendationAlgorithm.APPLE)) {
-        captureSourceFailure {
-            AppleHomeSource.tracks(appleRecommendationPoolSize(candidateLimit))
-        }
-    } else {
-        Result.success(emptyList())
-    }
-    val appleCandidates = appleResult.getOrElse {
-        sourceFailures += it
-        emptyList()
-    }
     val unseenAppleCandidates = selectUnseenAppleCandidates(
         pool = appleCandidates,
         existing = existing,

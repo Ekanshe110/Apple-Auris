@@ -3815,6 +3815,18 @@ class PlaybackService : MediaLibraryService() {
      * replaced by a new one appended after the ones still waiting instead of
      * everything arriving in one burst at the end of the queue.
      */
+    /**
+     * Re-arm AutoPlay for the current track even if it was already considered.
+     *
+     * Called when the listener taps an AutoPlay row, because the row becoming
+     * current must immediately refill the tail rather than waiting for the next
+     * track change.
+     */
+    internal fun ensureAutoplayQueue() {
+        autoplaySeed = null
+        loadAutoplayForCurrentTrack()
+    }
+
     private fun loadAutoplayForCurrentTrack() {
         val exoPlayer = player ?: return
         val party = ListenTogether.state.value
@@ -3847,7 +3859,9 @@ class PlaybackService : MediaLibraryService() {
         autoplayLoadJob = scope.launch {
             var remaining = needed
             var emptyRefreshesRemaining = MAX_AUTOPLAY_EMPTY_REFRESHES
-            while (isActive) {
+            var refillsRemaining = 2
+            var seed = current
+            while (isActive && refillsRemaining-- > 0) {
                 val activePlayer = player ?: return@launch
                 val activeParty = ListenTogether.state.value
                 if (!autoplayEnabled(activeParty) ||
@@ -3865,7 +3879,7 @@ class PlaybackService : MediaLibraryService() {
                 } else {
                     queueSongs
                 }
-                val result = loadAutoplayTracks(existing, current, remaining)
+                val result = loadAutoplayTracks(existing, seed, remaining)
                 val resolved = result.getOrElse {
                     TrackLog.w(
                         "BitChord",
@@ -3905,7 +3919,10 @@ class PlaybackService : MediaLibraryService() {
                         latestPlayer.addMediaItems(resolved.map { it.toMediaItem() })
                     }
                     if (AppSettings.dontRepeatSuggestions.value) sessionSongHistory += resolved
-                    return@launch
+                    if (resolved.size >= remaining) return@launch
+                    remaining -= resolved.size
+                    seed = resolved.last()
+                    continue
                 }
 
                 // Empty and failed responses used to leave [autoplaySeed]
