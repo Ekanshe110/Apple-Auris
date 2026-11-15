@@ -5450,6 +5450,12 @@ class PlaybackService : MediaLibraryService() {
     private var swapCutAt: Long? = null
 
     /**
+     * True from a rendition-switch tap until its swap lands, so a second tap
+     * cannot start a second prepare against the same item.
+     */
+    private var renditionSwitchInFlight = false
+
+    /**
      * True while [crossfadeUpgradeIn] owns the standby player. Read by
      * [CrossfadeController] through [versionSwapActive] and by
      * [smoothSwapCurrentTrackVersion]: both would otherwise arm the same
@@ -5693,33 +5699,53 @@ class PlaybackService : MediaLibraryService() {
      * and the next track keeps the listener's rung.
      */
     private fun switchCurrentRendition(toAtmos: Boolean) {
+        if (renditionSwitchInFlight) return
         val active = player ?: return
         // The standby pair is shared with the quality fade and version swaps.
         if (upgradeFadeActive || versionSwapJob?.isActive == true) return
         if (crossfade?.isTransitioning() == true) return
         val item = active.currentMediaItem ?: return
-        val index = active.currentMediaItemIndex
         val uri = item.localConfiguration?.uri ?: return
         val target = if (toAtmos) "atmos" else "lossless"
         if (uri.getQueryParameter("r") == target) return
+        // Uri.Builder has no remove; replace the whole query with every
+        // parameter except the old rendition, then the new one.
+        val kept = uri.encodedQuery.orEmpty()
+            .split('&')
+            .filterNot { it.substringBefore('=') == "r" }
         val switchedUri = uri.buildUpon()
-            .removeQueryParameter("r")
-            .appendQueryParameter("r", target)
+            .encodedQuery((kept + "r=$target").joinToString("&"))
             .build()
         val switched = item.buildUpon().setUri(switchedUri).build()
         val mediaId = item.mediaId
-        val now = swapPointFor(mediaId)
-        if (now != null) {
-            when (crossfadeUpgradeIn(mediaId, now, switched, switchedUri.toString())) {
-                UpgradeSwap.Crossfaded -> return
-                UpgradeSwap.Abandoned, UpgradeSwap.Failed -> return
-                UpgradeSwap.Fallback -> Unit
+        renditionSwitchInFlight = true
+        scope.launch(Dispatchers.Main) {
+            try {
+                val now = swapPointFor(mediaId)
+                if (now == null) {
+                    swapRenditionDirect(switched)
+                    return@launch
+                }
+                when (crossfadeUpgradeIn(mediaId, now, switched, switchedUri.toString())) {
+                    UpgradeSwap.Crossfaded, UpgradeSwap.Abandoned, UpgradeSwap.Failed -> Unit
+                    UpgradeSwap.Fallback -> swapRenditionDirect(switched)
+                }
+            } finally {
+                renditionSwitchInFlight = false
             }
         }
+    }
+
+    /** The direct half of [switchCurrentRendition]: same position, no fade. */
+    private fun swapRenditionDirect(item: MediaItem) {
+        val active = player ?: return
+        val index = active.currentMediaItemIndex
+        if (index !in 0 until active.mediaItemCount) return
+        if (active.currentMediaItem?.mediaId != item.mediaId) return
         val at = active.currentPosition
-        swappingMediaId = mediaId
+        swappingMediaId = item.mediaId
         swapCutAt = SystemClock.elapsedRealtime()
-        active.replaceMediaItem(index, switched)
+        active.replaceMediaItem(index, item)
         active.seekTo(index, at)
         active.prepare()
     }
