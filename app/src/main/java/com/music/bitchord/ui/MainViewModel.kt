@@ -173,6 +173,19 @@ internal fun flowBuildMayPublish(
 ): Boolean = generation == currentGeneration && algorithm == currentAlgorithm
 
 /**
+ * The Home header after one Spotify read.
+ *
+ * A failed read keeps the header the listener already had. An answered read
+ * owns the header even when it brings none: the old greeting and chips must
+ * not survive a Spotify page that stopped sending them.
+ */
+internal fun spotifyHeaderAfterRead(
+    previous: HomeHeader?,
+    answered: Boolean,
+    outcomeHeader: HomeHeader?,
+): HomeHeader? = if (answered) outcomeHeader else previous
+
+/**
  * Where the Search tab looks.
  *
  * Three catalogues, three sets of answers. The order is the order the
@@ -2731,6 +2744,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val header: HomeHeader? = null,
         val reason: String? = null,
         val continuation: String? = null,
+        /**
+         * Whether the provider answered at all.
+         *
+         * A failed read and a successful read with no header look the same
+         * when only the header is kept: both carry null. They mean opposite
+         * things for the page — one keeps the old header, the other clears it.
+         */
+        val answered: Boolean = false,
     )
 
     /**
@@ -2784,6 +2805,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     shelves = outcome.shelves,
                     header = outcome.header,
                     reason = outcome.reason,
+                    answered = true,
                 )
             } catch (failure: CancellationException) {
                 throw failure
@@ -2860,10 +2882,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         replace: Boolean,
     ) {
         // Spotify owns the header even in ALL. Preserve the old one while the
-        // new read is in flight, then replace it when Spotify answers.
+        // new read is in flight, then replace it when Spotify answers. An
+        // answered read owns the header even when it brings none: the old
+        // greeting and chips must not survive a page that stopped sending
+        // them. A failed read leaves the header the listener already had.
         if (!isCurrentHomeLoad(identity, generation)) return
-        stages.firstOrNull { it.scope == HOME_SCOPE_SPOTIFY }?.header?.let {
-            _homeHeader.value = it
+        stages.firstOrNull { it.scope == HOME_SCOPE_SPOTIFY }?.let { spotify ->
+            _homeHeader.value = spotifyHeaderAfterRead(
+                previous = _homeHeader.value,
+                answered = spotify.answered,
+                outcomeHeader = spotify.header,
+            )
         }
         var visible = false
         var replaced = false
@@ -2933,12 +2962,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         replace: Boolean = true,
     ) {
         val outcome = runCatching { SpotifyHomeSource.page(homeFacet.value) }.getOrNull() ?: return
-        if (!isCurrentHomeLoad(identity, generation) || outcome.isEmpty) return
+        if (!isCurrentHomeLoad(identity, generation)) return
         if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.SPOTIFY ||
             AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.ALL
         ) {
-            _homeHeader.value = outcome.header
+            // An answered read owns the header even when it brings none, so a
+            // stale greeting and chips do not outlive Spotify's own page. A
+            // failed read keeps the header the listener already had.
+            _homeHeader.value = spotifyHeaderAfterRead(
+                previous = _homeHeader.value,
+                answered = outcome.reason == null,
+                outcomeHeader = outcome.header,
+            )
         }
+        if (outcome.isEmpty) return
         val visible = publishHomeShelves(
             shelves = outcome.shelves,
             identity = identity,
