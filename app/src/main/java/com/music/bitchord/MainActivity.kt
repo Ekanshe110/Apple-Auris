@@ -712,12 +712,13 @@ internal fun visibleSearchReturnTab(lastSearchTab: Int, visibleTabs: List<Int>):
  * Keeping the Apple route, config, callbacks and scroll states in one holder
  * means that lambda captures one object instead of every individual value.
  */
-private class AppleLibraryPageState(
+internal class AppleLibraryPageState(
     val listState: LazyListState,
     val detailListState: LazyListState,
 ) {
     var collectionIndex by mutableIntStateOf(0)
     var visible by mutableStateOf(false)
+    var homeProvider by mutableStateOf(HomeProvider.YOUTUBE)
     var detailId by mutableStateOf<String?>(null)
     var detailTitle by mutableStateOf<String?>(null)
     var config by mutableStateOf<com.music.bitchord.data.sources.SourceConfig?>(null)
@@ -725,6 +726,9 @@ private class AppleLibraryPageState(
     var onPlaySong: (Song) -> Unit = {}
     var onCollectionChange: (Int) -> Unit = {}
     var onDetailChange: (String?, String?) -> Unit = { _, _ -> }
+    var onCloseLibrary: () -> Unit = {}
+    var onBackLibrary: () -> Unit = {}
+    var onBackDetail: () -> Unit = {}
 }
 
 @Composable
@@ -1636,6 +1640,7 @@ private fun BitChordApp(
         appleLibraryListState,
         appleLibraryDetailListState,
     ) { AppleLibraryPageState(appleLibraryListState, appleLibraryDetailListState) }
+    viewModel.appleLibraryPageState = appleLibraryPageState
     val libraryShowAllGridState = rememberLazyGridState()
     val searchListState = rememberLazyListState()
     val currentListState = when (selectedTab) {
@@ -3611,9 +3616,45 @@ private fun BitChordApp(
         )
     }
 
+    // Keep the root page's new state in one holder. This code stays outside
+    // AppRootBox's content lambda: that lambda already uses dex's full
+    // constructor budget, so every new capture there would make the APK
+    // unverifiable at install time.
+    appleLibraryPageState.collectionIndex = appleLibraryCollectionIndex
+    appleLibraryPageState.visible = showAppleLibrary
+    appleLibraryPageState.detailId = appleLibraryDetailId
+    appleLibraryPageState.detailTitle = appleLibraryDetailTitle
+    appleLibraryPageState.config = appleCatalogConfig
+    appleLibraryPageState.contentPadding = listPadding
+    appleLibraryPageState.homeProvider = homeProvider
+    appleLibraryPageState.onPlaySong = { song ->
+        playWithResume(listOf(song), 0)
+    }
+    appleLibraryPageState.onCollectionChange = { index ->
+        appleLibraryCollectionIndex = index
+        appleLibraryDetailId = null
+        appleLibraryDetailTitle = null
+    }
+    appleLibraryPageState.onDetailChange = { id, title ->
+        appleLibraryDetailId = id
+        appleLibraryDetailTitle = title
+    }
+    appleLibraryPageState.onCloseLibrary = {
+        showAppleLibrary = false
+    }
+    appleLibraryPageState.onBackLibrary = {
+        showAppleLibrary = false
+        selectedTab = TAB_LIBRARY
+    }
+    appleLibraryPageState.onBackDetail = {
+        appleLibraryDetailId = null
+        appleLibraryDetailTitle = null
+    }
+
     AppRootBox {
 
         val clipboard = LocalClipboardManager.current
+        val applePageState = viewModel.appleLibraryPageState
 
         val useFoldingNav = foldingNavBar && glassActive
 
@@ -3694,9 +3735,8 @@ private fun BitChordApp(
         BackHandler(enabled = showSpotify && detail == null) {
             showSpotify = false
         }
-        BackHandler(enabled = showAppleLibrary && appleLibraryDetailId == null) {
-            showAppleLibrary = false
-            selectedTab = TAB_LIBRARY
+        BackHandler(enabled = applePageState.visible && applePageState.detailId == null) {
+            applePageState.onBackLibrary()
         }
         BackHandler(enabled = showAccountScrobbling && !showDiscord && !showSpotify) {
             showAccountScrobbling = false
@@ -3750,7 +3790,7 @@ private fun BitChordApp(
                 !showSources && !showListenTogether && !showEqualizer && !showReplay && selectedMoodGenre == null &&
                 !showDiscord && !showHistory && !showFlow && !showQuickPicks && !showGenres &&
                 !showAudiobooks && openAudiobook == null && itunesPodcastId == null &&
-                !showAppleLibrary &&
+                !applePageState.visible &&
                 !searchVisualActive && selectedTab != TAB_HOME,
         ) {
             selectedTab = TAB_HOME
@@ -4250,28 +4290,6 @@ private fun BitChordApp(
             )
         } else {
 
-        // Keep the Apple page's dependencies in one holder. Besides making
-        // the route state atomic, this keeps the page-switch lambda below
-        // inside dex's constructor-width limit.
-        appleLibraryPageState.collectionIndex = appleLibraryCollectionIndex
-        appleLibraryPageState.visible = showAppleLibrary
-        appleLibraryPageState.detailId = appleLibraryDetailId
-        appleLibraryPageState.detailTitle = appleLibraryDetailTitle
-        appleLibraryPageState.config = appleCatalogConfig
-        appleLibraryPageState.contentPadding = listPadding
-        appleLibraryPageState.onPlaySong = { song ->
-            playWithResume(listOf(song), 0)
-        }
-        appleLibraryPageState.onCollectionChange = { index ->
-            appleLibraryCollectionIndex = index
-            appleLibraryDetailId = null
-            appleLibraryDetailTitle = null
-        }
-        appleLibraryPageState.onDetailChange = { id, title ->
-            appleLibraryDetailId = id
-            appleLibraryDetailTitle = title
-        }
-
         // On a tablet the page and the player stand side by side rather than
         // one over the other: everything a phone stacks in a single column —
         // the feed, the frosted bars, the tab row — becomes the left half of
@@ -4301,7 +4319,7 @@ private fun BitChordApp(
                 // on the difference between two of these.
                 val pageKey = when {
                     showSpotify && detail == null -> "spotify"
-                    appleLibraryPageState.visible && detail == null -> "apple_library"
+                    applePageState.visible && detail == null -> "apple_library"
                     showDiscord -> "discord"
                     showHistory -> "history"
                     showFlow -> "flow"
@@ -4644,7 +4662,7 @@ private fun BitChordApp(
                             contentPadding = listPadding,
                         )
                     } else if (key == "apple_library") {
-                        AppleLibraryPage(state = appleLibraryPageState)
+                        AppleLibraryPage(state = applePageState)
                     } else if (key == "discord") {
                         DiscordScreen(
                             song = player.song,
@@ -5098,12 +5116,12 @@ private fun BitChordApp(
                             // hero treatment is for a row of tracks. A hero
                             // card is a cover with a title laid over it, which
                             // is not what a Spotify card is.
-                            leadHero = homeProvider != HomeProvider.SPOTIFY,
+                            leadHero = applePageState.homeProvider != HomeProvider.SPOTIFY,
                             signedIn = signedIn,
                             onSignIn = { webSession = WebSessionMode.SIGN_IN },
                             signInBannerDismissed = signInBannerDismissed,
                             onDismissSignInBanner = { signInBannerDismissed = true },
-                            showSignInBanner = homeProvider == HomeProvider.YOUTUBE,
+                            showSignInBanner = applePageState.homeProvider == HomeProvider.YOUTUBE,
                             onItemClick = { item, shelfTitle ->
                                 val song = shelfSong(item)
                                 // Hoisted because ShelfItem lives in :shared, and
@@ -5440,7 +5458,7 @@ private fun BitChordApp(
                                 // lambda in the app, and every captured value
                                 // costs a dex register in its constructor.
                                 val currentSources = visibleSearchSources(
-                                    homeProvider == HomeProvider.APPLE,
+                                    applePageState.homeProvider == HomeProvider.APPLE,
                                 )
                                 SegmentedControl(
                                     options = currentSources.map { source ->
@@ -5628,13 +5646,11 @@ private fun BitChordApp(
                     pullFraction = { currentPull?.distanceFraction ?: 0f },
                     onBack = when {
                         showSpotify && detail == null -> ({ showSpotify = false })
-                        showAppleLibrary && appleLibraryDetailId == null -> ({
-                            showAppleLibrary = false
-                            selectedTab = TAB_LIBRARY
+                        applePageState.visible && applePageState.detailId == null -> ({
+                            applePageState.onBackLibrary()
                         })
-                        showAppleLibrary && appleLibraryDetailId != null -> ({
-                            appleLibraryDetailId = null
-                            appleLibraryDetailTitle = null
+                        applePageState.visible && applePageState.detailId != null -> ({
+                            applePageState.onBackDetail()
                         })
                         showDiscord -> ({ showDiscord = false })
                         showHistory -> ({ showHistory = false })
@@ -5952,7 +5968,7 @@ private fun BitChordApp(
                     showGenres = false
                     showDiscord = false
                     showSpotify = false
-                    showAppleLibrary = false
+                    applePageState.onCloseLibrary()
                     settingsSubScreen = null
                     showHistory = false
                     showFlow = false

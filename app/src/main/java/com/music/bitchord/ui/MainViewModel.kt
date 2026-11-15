@@ -3,6 +3,7 @@ package com.music.bitchord.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.music.bitchord.AppleLibraryPageState
 import com.music.bitchord.R
 import com.music.bitchord.auth.AuthStore
 import com.music.bitchord.auth.GoogleAccountSession
@@ -267,6 +268,15 @@ internal fun appleCatalogueMatchUnavailable(
 }
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
+
+    /**
+     * UI state needed by the root page lambda.
+     *
+     * The root page lambda already uses dex's full constructor budget. Keeping
+     * this holder on the already-captured view model avoids adding another
+     * capture to the root content.
+     */
+    internal lateinit var appleLibraryPageState: AppleLibraryPageState
 
     private val authStore = AuthStore(app)
 
