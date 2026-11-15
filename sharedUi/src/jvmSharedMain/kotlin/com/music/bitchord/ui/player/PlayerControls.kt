@@ -385,11 +385,12 @@ internal fun PlaybackQualityLabel(
     // somewhere else.
     var details by remember { mutableStateOf(false) }
     val switchRendition = LocalRenditionSwitch.current
-    // Only a badge that is already stating one of the two mixes offers the
-    // other one: a blank or lossy-only badge is not a switch.
+    // A playing Atmos stream can always switch down to lossless; a lossless
+    // stream offers the switch only when the catalogue says an Atmos mix
+    // exists.
     val renditionSwitchable = switchRendition != null &&
-        song.atmosAvailable &&
-        (nerdStats?.isDolbyAtmos == true || nerdStats?.isLossless == true)
+        (nerdStats?.isDolbyAtmos == true ||
+            (song.atmosAvailable && nerdStats?.isLossless == true))
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         LosslessOrStats(
             isLoading = isLoading,
