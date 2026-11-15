@@ -1148,7 +1148,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val repository = AppleLibraryStore.repository(config)
             when (val state = repository.load(AppleLibraryCollection.PLAYLISTS, offset = 0)) {
                 is AppleLibraryState.Ready -> _applePlaylists.value = UiState.Success(state.items)
-                is AppleLibraryState.Failure -> _applePlaylists.value = UiState.Error(state.failure ?: text(R.string.failed))
+                is AppleLibraryState.Failure -> _applePlaylists.value = UiState.Error(state.message.ifBlank { text(R.string.failed) })
                 else -> _applePlaylists.value = UiState.Error(text(R.string.failed))
             }
         }
