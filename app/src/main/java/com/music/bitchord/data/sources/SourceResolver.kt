@@ -41,7 +41,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 object SourceResolver {
 
     private const val TAG = "BitChord"
-    private const val RENDITION_PARAM = "r"
+    private const val RENDITION_PARAM = "rend"
 
     /**
      * What to ask a source for, right now.

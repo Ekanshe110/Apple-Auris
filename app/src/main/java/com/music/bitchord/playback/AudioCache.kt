@@ -775,7 +775,7 @@ object AudioCache {
             ?: spec.uri.takeIf { it.authority == "source" }?.let { uri ->
                 val source = uri.getQueryParameter("s")
                 val track = uri.getQueryParameter("t")
-                val rendition = uri.getQueryParameter("r")
+                val rendition = uri.getQueryParameter("rend")
                 if (source != null && track != null) {
                     // Apple playback keeps the addon's stream id in `t`, but its
                     // cache identity is Apple's catalogue id in `c`. The original
