@@ -251,6 +251,7 @@ import com.music.bitchord.ui.components.LocalCollectionActions
 import com.music.bitchord.ui.components.ConfirmationAlert
 import com.music.bitchord.ui.components.DownloadManagerSheet
 import com.music.bitchord.ui.components.PlaylistPickerSheet
+import com.music.bitchord.ui.components.ApplePlaylistPickerSheet
 import com.music.bitchord.ui.components.PodcastEpisodeSheet
 import com.music.bitchord.ui.components.FolderPickerSheet
 import com.music.bitchord.ui.components.ReorderPlaylistSheet
@@ -966,6 +967,9 @@ private fun BitChordApp(
     // shut. Separate from [songActions] for the same reason as [playlistTarget]:
     // the menu closes behind it rather than two sheets stacking.
     var folderTarget by remember { mutableStateOf<Song?>(null) }
+    // Which track is being put into an Apple Music library playlist, or null when
+    // the picker is shut.
+    var applePlaylistTarget by remember { mutableStateOf<Song?>(null) }
     // The picker opened from the Library's "+" tile, where there is no track
     // and making the folder is the whole errand.
     var creatingFolder by remember { mutableStateOf(false) }
@@ -1454,6 +1458,9 @@ private fun BitChordApp(
         val shown = queueNotice ?: return@LaunchedEffect
         delay(3_000)
         if (queueNotice?.id == shown.id) queueNotice = null
+    }
+    LaunchedEffect(Unit) {
+        viewModel.appleLikeNotice.collect { showQueueNotice(it) }
     }
     // Why a control did nothing, on the same strip above the mini player that
     // already answers "added to queue". Reached from every surface that had a
@@ -3357,7 +3364,7 @@ private fun BitChordApp(
             autoplayEnabled = autoplayEnabled,
             signedIn = signedIn,
             likeStatus = likeStatuses[song.videoId] ?: LikeStatus.INDIFFERENT,
-            onToggleLike = { viewModel.toggleLike(song.videoId) },
+            onToggleLike = { viewModel.toggleLike(song) },
             // The service owns both the queue and the Shuffle state. Keeping
             // the toggle on that side prevents the UI from changing the icon
             // before its asynchronous reorder command has actually landed.
@@ -3879,7 +3886,7 @@ private fun BitChordApp(
                     },
                 // The sheet stays up for a rating: it shows the new state
                 // in place, and people often thumb a song and then queue it.
-                onToggleLike = { viewModel.toggleLike(song.videoId) },
+                onToggleLike = { viewModel.toggleLike(song) },
                 onToggleDislike = {
                     val previousStatus = viewModel.toggleDislike(song.videoId)
                     if (
@@ -3913,6 +3920,13 @@ private fun BitChordApp(
                     songActions = null
                     folderTarget = song
                 },
+                onAddToApplePlaylist = if (appleCatalogConfig != null && !song.appleCatalogId.isNullOrBlank()) {
+                    {
+                        songActions = null
+                        applePlaylistTarget = song
+                        viewModel.loadApplePlaylists(appleCatalogConfig)
+                    }
+                } else null,
                 onRemoveFromFolder = openFolder?.let { folder ->
                     {
                         songActions = null
@@ -4405,7 +4419,7 @@ private fun BitChordApp(
                             onShuffle = { startFlow(true) },
                             onNewMix = { viewModel.newFlowMix() },
                             onToggleLike = {
-                                player.song?.let { viewModel.toggleLike(it.videoId) }
+                                player.song?.let { viewModel.toggleLike(it) }
                             },
                             currentLiked = player.song?.let {
                                 likeStatuses[it.videoId] == LikeStatus.LIKE
@@ -6545,6 +6559,42 @@ private fun BitChordApp(
                         dismiss()
                     },
                 )
+            }
+        }
+
+        // ---- Add to Apple Music playlist ----
+        applePlaylistTarget?.let { targetSong ->
+            val appleConfig = appleCatalogConfig
+            if (appleConfig != null) {
+                val applePlaylists by viewModel.applePlaylists.collectAsStateWithLifecycle()
+                val dismiss = {
+                    applePlaylistTarget = null
+                    viewModel.resetApplePlaylists()
+                }
+                BackHandler(onBack = dismiss)
+                ModalBottomSheet(
+                    onDismissRequest = dismiss,
+                    containerColor = MaterialTheme.colorScheme.background,
+                ) {
+                    ApplePlaylistPickerSheet(
+                        playlists = applePlaylists,
+                        onAdd = { picked ->
+                            picked.forEach { playlist ->
+                                scope.launch {
+                                    viewModel.addToApplePlaylist(appleConfig, playlist.id, targetSong)
+                                }
+                            }
+                            showQueueNotice(
+                                if (picked.size == 1) {
+                                    context.getString(R.string.track_added_to_apple_playlist, picked.first().title)
+                                } else {
+                                    context.getString(R.string.tracks_added_to_apple_playlists, picked.size)
+                                },
+                            )
+                            dismiss()
+                        },
+                    )
+                }
             }
         }
 

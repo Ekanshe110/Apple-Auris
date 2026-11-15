@@ -457,7 +457,7 @@ internal fun LandscapeCredits(
         // Same gate as the portrait player's: no account to like against for a
         // guest, and no YouTube identity to rate a local file or a finished
         // download against either.
-        if (signedIn && song.localUri == null) {
+        if ((signedIn || !song.appleCatalogId.isNullOrBlank()) && song.localUri == null) {
             val liked = likeStatus == LikeStatus.LIKE
             CircleGlyph(
                 icon = if (liked) PlayerIcons.Liked else PlayerIcons.LikedOff,

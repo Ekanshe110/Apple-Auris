@@ -17,6 +17,7 @@ enum class AppleLibraryCollection(val routeName: String, val label: String) {
     PLAYLISTS("playlists", "Playlists"),
     ALBUMS("albums", "Albums"),
     SONGS("songs", "Songs"),
+    LIKED("liked", "Liked"),
 }
 
 /** The state of one Apple library page. These outcomes are deliberately distinct. */
@@ -62,6 +63,7 @@ class AppleLibraryRepository(private val config: SourceConfig) {
             AppleLibraryCollection.PLAYLISTS -> client.libraryPlaylists(offset)
             AppleLibraryCollection.ALBUMS -> client.libraryAlbums(offset)
             AppleLibraryCollection.SONGS -> client.librarySongs(offset)
+            AppleLibraryCollection.LIKED -> return AppleLibraryState.Failure("Liked songs are local")
         }.getOrElse { return it.state() }
         return page.state(offset)
     }
@@ -76,9 +78,13 @@ class AppleLibraryRepository(private val config: SourceConfig) {
             AppleLibraryCollection.PLAYLISTS -> client.libraryPlaylistTracks(collectionId, offset)
             AppleLibraryCollection.ALBUMS -> client.libraryAlbumTracks(collectionId, offset)
             AppleLibraryCollection.SONGS -> client.librarySongTracks(collectionId, offset)
+            AppleLibraryCollection.LIKED -> return AppleLibraryState.Failure("Liked songs are local")
         }.getOrElse { return it.state() }
         return page.state(offset)
     }
+
+    /** The bound addon client, when one exists. */
+    internal suspend fun clientOrNull(): AddonClient? = client().getOrNull()
 
     private suspend fun client(): Result<AddonClient> = clientLock.withLock {
         try {

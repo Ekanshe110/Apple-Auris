@@ -11,8 +11,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.net.URLEncoder
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
@@ -223,6 +226,49 @@ class AddonClient(
         offset,
         limit,
     )
+
+    /**
+     * Set or clear the Apple Music "love" rating for a catalog song.
+     *
+     * The server receives the exact Apple catalog id and forwards it to Apple.
+     */
+    suspend fun libraryRate(songId: String, liked: Boolean): Result<Unit> = runCatching {
+        val manifest = manifest().getOrElse { throw it }
+        val capability = manifest.library
+            ?: throw AddonUnsupportedException("This addon does not advertise library support")
+        if (!manifest.isAppleMusicCatalog) {
+            throw AddonUnsupportedException("This addon does not identify as an Apple Music catalogue")
+        }
+        val headers = libraryHeaders(capability).getOrElse { throw it }
+        val encoded = URLEncoder.encode(songId, "UTF-8")
+        postBody(
+            url = "$baseUrl/library/ratings/$encoded",
+            headers = headers,
+            body = "{\"liked\":$liked}",
+        )
+    }
+
+    /**
+     * Add a catalog song to one of the user's Apple Music library playlists.
+     */
+    suspend fun libraryAddToPlaylist(
+        playlistId: String,
+        songId: String,
+    ): Result<Unit> = runCatching {
+        val manifest = manifest().getOrElse { throw it }
+        val capability = manifest.library
+            ?: throw AddonUnsupportedException("This addon does not advertise library support")
+        if (!manifest.isAppleMusicCatalog) {
+            throw AddonUnsupportedException("This addon does not identify as an Apple Music catalogue")
+        }
+        val headers = libraryHeaders(capability).getOrElse { throw it }
+        val encodedPlaylist = URLEncoder.encode(playlistId, "UTF-8")
+        postBody(
+            url = "$baseUrl/library/playlists/$encodedPlaylist/tracks",
+            headers = headers,
+            body = "{\"ids\":[\"$songId\"]}",
+        )
+    }
 
     /** A page from any library collection declared by the manifest. */
     suspend fun libraryCollection(
@@ -706,6 +752,58 @@ class AddonClient(
         throw AddonException("unreachable")
     }
 
+    /**
+     * POST a JSON body and return the response text.
+     *
+     * Same retry and error policy as [body], but for writes. A write body is
+     * small and idempotent where the caller makes it so (rating is set, not
+     * toggled), so retries are safe.
+     */
+    private suspend fun postBody(
+        url: String,
+        headers: Map<String, String> = emptyMap(),
+        body: String,
+        allowEmpty: Boolean = true,
+    ): String = withContext(Dispatchers.IO) {
+        var attempt = 0
+        while (true) {
+            (quietUntilMs - System.currentTimeMillis()).takeIf { it > 0 }?.let { delay(it) }
+
+            val requestBody = body.toRequestBody(JSON_MEDIA_TYPE)
+            val request = Request.Builder().url(url)
+                .post(requestBody)
+                .header("Accept", "application/json")
+                .header("User-Agent", USER_AGENT)
+                .apply { headers.forEach { (name, value) -> header(name, value) } }
+                .build()
+
+            val wait = client.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string().orEmpty()
+                when {
+                    response.isSuccessful ->
+                        return@withContext responseBody.takeIf { it.isNotBlank() }
+                            ?: if (allowEmpty) "" else throw AddonException("Empty response")
+                    response.code == 404 -> throw AddonNotFound()
+                    response.code == 401 || response.code == 403 -> {
+                        val error = parseErrorBody(responseBody)
+                        val code = error?.code ?: error?.error?.code
+                        val message = error?.error?.message ?: error?.message
+                            ?: "HTTP ${response.code}"
+                        throw AddonAuthenticationException(code, message)
+                    }
+                    response.code >= 500 -> throw AddonUnavailable("HTTP ${response.code}")
+                    response.code != 429 -> throw AddonException("HTTP ${response.code}")
+                    attempt >= MAX_RETRIES -> throw AddonUnavailable("This addon is rate limiting Auris")
+                    else -> retryAfterMs(response.header("Retry-After"), attempt)
+                }
+            }
+            quietUntilMs = System.currentTimeMillis() + wait
+            attempt++
+        }
+        @Suppress("UNREACHABLE_CODE")
+        throw AddonException("unreachable")
+    }
+
     /** Read a machine-readable error without requiring the error document to be well formed. */
     private fun parseErrorBody(text: String): AddonErrorBody? {
         if (text.isBlank()) return null
@@ -866,6 +964,8 @@ class AddonClient(
         private const val MAX_RETRIES = 2
         private const val BACKOFF_BASE_MS = 500L
         private const val BACKOFF_CAP_MS = 8_000L
+
+        private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
         /**
          * Deliberately a neutral browser string, not the app's name. Some

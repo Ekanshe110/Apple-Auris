@@ -4151,7 +4151,7 @@ fun NowPlayingScreen(
                     // there's no account to record it against — and neither
                     // does a local file or a finished download, which carries
                     // no YouTube identity to rate.
-                    if (signedIn && song.localUri == null) {
+                    if ((signedIn || !song.appleCatalogId.isNullOrBlank()) && song.localUri == null) {
                         val liked = likeStatus == LikeStatus.LIKE
                         CircleGlyph(
                             icon = if (liked) PlayerIcons.Liked else PlayerIcons.LikedOff,

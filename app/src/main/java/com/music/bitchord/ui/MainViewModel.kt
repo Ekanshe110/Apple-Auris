@@ -15,7 +15,14 @@ import com.music.bitchord.data.AppUpdateChecker
 import com.music.bitchord.data.LocalMediaRepository
 import com.music.bitchord.data.apple.AppleEnrichment
 import com.music.bitchord.data.apple.AppleHomeSource
+import com.music.bitchord.data.apple.AppleLikedStore
+import com.music.bitchord.data.apple.AppleLikeRepository
+import com.music.bitchord.data.apple.AppleLibraryCollection
+import com.music.bitchord.data.apple.AppleLibraryState
+import com.music.bitchord.data.apple.AppleLibraryStore
+import com.music.bitchord.data.apple.asLibraryItem
 import com.music.bitchord.data.LikeState
+import com.music.bitchord.data.sources.addon.AddonLibraryItem
 import com.music.bitchord.data.presence.AndroidPresence
 import com.music.bitchord.data.YtMusicRepository
 import com.music.bitchord.data.model.isUnresolvedSpotify
@@ -95,8 +102,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
@@ -1120,6 +1129,49 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         likeStatuses.value[videoId] ?: LikeStatus.INDIFFERENT
 
     /**
+     * One non-blocking message when an Apple like/playlist write fails and the
+     * optimistic heart has to be rolled back.
+     */
+    private val _appleLikeNotice = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val appleLikeNotice: SharedFlow<String> = _appleLikeNotice.asSharedFlow()
+
+    /** Apple Music library playlists for the add-to-Apple-playlist sheet. */
+    private val _applePlaylists = MutableStateFlow<UiState<List<AddonLibraryItem>>>(UiState.Success(emptyList()))
+    val applePlaylists: StateFlow<UiState<List<AddonLibraryItem>>> = _applePlaylists.asStateFlow()
+
+    fun loadApplePlaylists(config: com.music.bitchord.data.sources.SourceConfig) {
+        viewModelScope.launch {
+            _applePlaylists.value = UiState.Loading
+            val repository = AppleLibraryStore.repository(config)
+            when (val state = repository.load(AppleLibraryCollection.PLAYLISTS, offset = 0)) {
+                is AppleLibraryState.Ready -> _applePlaylists.value = UiState.Success(state.items)
+                is AppleLibraryState.Failure -> _applePlaylists.value = UiState.Error(state.failure ?: text(R.string.failed))
+                else -> _applePlaylists.value = UiState.Error(text(R.string.failed))
+            }
+        }
+    }
+
+    fun resetApplePlaylists() {
+        _applePlaylists.value = UiState.Success(emptyList())
+    }
+
+    /**
+     * Add [song] to an Apple Music library playlist.
+     *
+     * The server needs the playlist's library id and the song's Apple catalog
+     * id. Returns the result so the UI can show one confirmation.
+     */
+    suspend fun addToApplePlaylist(
+        config: com.music.bitchord.data.sources.SourceConfig,
+        playlistId: String,
+        song: Song,
+    ): Result<Unit> {
+        val result = AppleLikeRepository.addToPlaylist(config, playlistId, song)
+        result.onFailure { _appleLikeNotice.emit(it.friendly()) }
+        return result
+    }
+
+    /**
      * Sets (or clears) the thumbs rating on [videoId].
      *
      * Written to the screen first and rolled back if YouTube refuses. A rating
@@ -1267,6 +1319,47 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         videoId,
         if (likeStatusOf(videoId) == LikeStatus.LIKE) LikeStatus.INDIFFERENT else LikeStatus.LIKE,
     )
+
+    /**
+     * The heart for the current song.
+     *
+     * Apple-backed songs are liked through the Apple addon even when the
+     * listener has no YouTube sign-in. YouTube-backed songs keep the old path.
+     */
+    fun toggleLike(song: Song) {
+        val appleId = song.appleCatalogId?.takeIf { it.isNotBlank() }
+        if (appleId != null) {
+            toggleAppleLike(song, appleId)
+        } else {
+            toggleLike(song.videoId)
+        }
+    }
+
+    private fun toggleAppleLike(song: Song, appleId: String) {
+        val videoId = song.videoId
+        val currentlyLiked = AppleLikedStore.isLiked(videoId) || likeStatusOf(videoId) == LikeStatus.LIKE
+        val targetLiked = !currentlyLiked
+        LikeState.set(videoId, if (targetLiked) LikeStatus.LIKE else LikeStatus.INDIFFERENT)
+        if (targetLiked) AppleLikedStore.add(song.asLibraryItem()) else AppleLikedStore.remove(videoId)
+
+        viewModelScope.launch {
+            val config = AppleLikeRepository.activeConfig()
+            if (config == null) {
+                // No Apple source: the heart is local only, which is still
+                // useful for an offline-only listener.
+                return@launch
+            }
+            AppleLikeRepository.setLiked(config, song, targetLiked).onFailure { failure ->
+                // Roll back the optimistic change.
+                LikeState.set(
+                    videoId,
+                    if (currentlyLiked) LikeStatus.LIKE else LikeStatus.INDIFFERENT,
+                )
+                if (currentlyLiked) AppleLikedStore.add(song.asLibraryItem()) else AppleLikedStore.remove(videoId)
+                _appleLikeNotice.emit(failure.friendly())
+            }
+        }
+    }
 
     /** As [toggleLike], for the thumb-down. */
     fun toggleDislike(videoId: String): LikeStatus? {

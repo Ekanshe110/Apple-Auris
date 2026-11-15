@@ -2,9 +2,13 @@ package com.music.bitchord.data.apple
 
 import com.music.bitchord.data.sources.SourceConfig
 import com.music.bitchord.data.sources.addon.AddonLibraryItem
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
@@ -67,6 +71,28 @@ internal class AppleLibraryScope(val key: AppleLibraryScopeKey) {
 
     private val _state = MutableStateFlow(AppleLibraryScopeState())
     val state: StateFlow<AppleLibraryScopeState> = _state.asStateFlow()
+
+    private val job = SupervisorJob()
+    private val scope = CoroutineScope(job + Dispatchers.Main.immediate)
+
+    init {
+        if (key.collection == AppleLibraryCollection.LIKED) {
+            scope.launch {
+                AppleLikedStore.items.collect { items ->
+                    _state.value = AppleLibraryScopeState(
+                        items = items,
+                        hasMore = false,
+                        nextOffset = null,
+                        empty = items.isEmpty(),
+                    )
+                }
+            }
+        }
+    }
+
+    internal fun cancel() {
+        job.cancel()
+    }
 
     /** Whether the first page has ever been read for this scope. */
     var loaded: Boolean = false
@@ -164,6 +190,13 @@ internal class AppleLibraryScope(val key: AppleLibraryScopeKey) {
     }
 
     private suspend fun fetch(config: SourceConfig, offset: Int): AppleLibraryState {
+        if (key.collection == AppleLibraryCollection.LIKED) {
+            return AppleLibraryState.Ready(
+                items = AppleLikedStore.items.value,
+                hasMore = false,
+                nextOffset = null,
+            )
+        }
         val repository = AppleLibraryStore.repository(config)
         val collectionId = key.collectionId
         return if (collectionId.isNullOrBlank()) {
@@ -264,6 +297,7 @@ object AppleLibraryStore {
 
     /** Forgets every cached listing. Used by tests. */
     internal fun clear() {
+        scopes.values.forEach { it.cancel() }
         scopes.clear()
         repositories.clear()
     }

@@ -200,7 +200,8 @@ fun AppleLibraryScreen(
                 items = state.items,
                 key = { item -> "${collection.routeName}:${detailId.orEmpty()}:${item.rowKey()}" },
             ) { item ->
-                val playable = detailId != null || collection == AppleLibraryCollection.SONGS
+                val playable = detailId != null || collection == AppleLibraryCollection.SONGS ||
+                    collection == AppleLibraryCollection.LIKED
                 LibraryRow(
                     title = item.title.ifBlank { "Untitled" },
                     subtitle = item.artist.ifBlank { item.album },

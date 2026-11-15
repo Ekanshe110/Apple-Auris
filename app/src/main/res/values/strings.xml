@@ -1394,6 +1394,11 @@
     <string name="audiobook_read_by">Read by %1$s</string>
     <string name="add_to_folder">Add to folder</string>
     <string name="remove_from_folder">Remove from folder</string>
+    <string name="add_to_apple_playlist">Add to Apple Music playlist</string>
+    <string name="no_apple_playlists">No Apple Music playlists found.</string>
+    <string name="unknown_playlist">Unknown playlist</string>
+    <string name="track_added_to_apple_playlist">Added to %1$s</string>
+    <string name="tracks_added_to_apple_playlists">Added to %1$d playlists</string>
     <string name="new_folder">New folder</string>
     <string name="folders">Folders</string>
     <string name="folder_name">Folder name</string>
