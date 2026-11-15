@@ -1,5 +1,13 @@
 package com.music.bitchord.data.model
 
+/**
+ * The row is known to be absent from the Apple Music catalogue.
+ *
+ * Stored in `Song.appleLookupError` so a cached row does not re-run the lookup.
+ * Rendered as a compact badge, never as a per-row error message.
+ */
+const val APPLE_CATALOGUE_NOT_FOUND = "Apple Music catalogue not found"
+
 /** Tier of an item in the playback queue. */
 enum class QueueTier {
     /** Explicitly queued by user ("Play Next", "Add to Queue", or preserved user queue). */

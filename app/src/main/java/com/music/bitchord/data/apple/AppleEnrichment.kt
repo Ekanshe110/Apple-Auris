@@ -1,6 +1,7 @@
 package com.music.bitchord.data.apple
 
 import com.music.bitchord.data.TrackLog
+import com.music.bitchord.data.model.APPLE_CATALOGUE_NOT_FOUND
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.data.model.durationMillis
 import com.music.bitchord.data.settings.AppSettings
@@ -156,7 +157,7 @@ object AppleEnrichment {
                     if (resolution == null) {
                         song.copy(
                             appleCatalogId = null,
-                            appleLookupError = "Apple Music catalogue not found",
+                            appleLookupError = APPLE_CATALOGUE_NOT_FOUND,
                         )
                     } else {
                         withAppleResolution(song, resolution)

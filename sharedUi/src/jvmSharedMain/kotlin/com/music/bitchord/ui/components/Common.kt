@@ -85,6 +85,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.music.bitchord.data.model.ROW_ART_PX
+import com.music.bitchord.data.model.APPLE_CATALOGUE_NOT_FOUND
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.data.model.isMatchPending
 import com.music.bitchord.data.model.isMatchMissing
@@ -561,13 +562,13 @@ private fun SongRowContent(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            song.appleLookupError?.let { error ->
+            song.appleLookupError?.takeIf { it == APPLE_CATALOGUE_NOT_FOUND }?.let {
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    text = error,
+                    text = stringResource(Res.string.not_on_apple_music),
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error,
-                    maxLines = 2,
+                    color = subtitleColor,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
