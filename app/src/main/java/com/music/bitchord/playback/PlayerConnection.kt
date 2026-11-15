@@ -346,10 +346,11 @@ fun songFromBundle(b: Bundle): Song = Song(
     isVideo = b.getBoolean("isVideo"),
     isVideoOrigin = b.getBoolean("isVideoOrigin"),
     setVideoId = b.getString("setVideoId"),
-    fromAutoplay = b.getBoolean("fromAutoplay"),
+    // The primary constructor owns the tier; the legacy `fromAutoplay` bool
+    // is only a fallback for bundles written before the tier was carried.
     queueTier = b.getString("queueTier")
         ?.let { runCatching { QueueTier.valueOf(it) }.getOrNull() }
-        ?: QueueTier.CONTEXT,
+        ?: if (b.getBoolean("fromAutoplay")) QueueTier.AUTOPLAY else QueueTier.CONTEXT,
     queueEntryId = b.getString("queueEntryId"),
     radioName = b.getString("radioName"),
     localUri = b.getString("localUri"),
