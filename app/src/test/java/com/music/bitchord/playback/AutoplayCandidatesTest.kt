@@ -69,6 +69,8 @@ class AutoplayCandidatesTest {
         videoId = id,
         title = "Title $id",
         artist = "Artist $id",
+        thumbnailUrl = null,
+        fromAutoplay = false,
         appleCatalogId = appleId,
         appleLookupError = appleLookupError,
     )
