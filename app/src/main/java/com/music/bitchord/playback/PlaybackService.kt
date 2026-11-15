@@ -5527,7 +5527,7 @@ class PlaybackService : MediaLibraryService() {
         val uri = item.localConfiguration?.uri
         // A rendition chosen by hand on this item is not a candidate for the
         // automatic hunt; a "better" copy under the global rung would undo it.
-        if (uri?.getQueryParameter("r") != null) return
+        if (uri?.getQueryParameter("rend") != null) return
         val alreadyPending = QualityUpgrade.isPending(mediaId)
         val shelved = QualityUpgrade.shelvedFor(mediaId)
         if (shelved == null && !alreadyPending && !QualityUpgrade.couldStillUpgrade(mediaId, uri, byHand)) return
@@ -5707,17 +5707,21 @@ class PlaybackService : MediaLibraryService() {
         val item = active.currentMediaItem ?: return
         val uri = item.localConfiguration?.uri ?: return
         val target = if (toAtmos) "atmos" else "lossless"
-        if (uri.getQueryParameter("r") == target) return
+        if (uri.getQueryParameter("rend") == target) return
         // Uri.Builder has no remove; replace the whole query with every
         // parameter except the old rendition, then the new one.
         val kept = uri.encodedQuery.orEmpty()
             .split('&')
-            .filterNot { it.substringBefore('=') == "r" }
+            .filterNot { it.substringBefore('=') == "rend" }
         val switchedUri = uri.buildUpon()
-            .encodedQuery((kept + "r=$target").joinToString("&"))
+            .encodedQuery((kept + "rend=$target").joinToString("&"))
             .build()
         val switched = item.buildUpon().setUri(switchedUri).build()
         val mediaId = item.mediaId
+        // Both pins are keyed by media id and outlive a rendition change. Left
+        // alone they would hand the new item the old mix's URL.
+        StreamChoice.forget(mediaId)
+        QualityUpgrade.forget(mediaId, keepHandAsk = true)
         renditionSwitchInFlight = true
         scope.launch(Dispatchers.Main) {
             try {
