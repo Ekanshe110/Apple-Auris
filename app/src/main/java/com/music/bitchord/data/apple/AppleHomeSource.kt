@@ -31,16 +31,6 @@ internal object AppleHomeSource {
         source.recommendationsResult(limit)
     }
 
-    /** The recommendation feed as one Home shelf. */
-    suspend fun shelf(limit: Int = DEFAULT_LIMIT): Result<HomeShelf> =
-        tracks(limit).map { songs ->
-            HomeShelf(
-                title = "Apple Music",
-                subtitle = "Made for you",
-                items = songs.map { it.toShelfItem() },
-            )
-        }
-
     /**
      * Apple Music's actual Home shelves, grouped the way Apple returned them.
      *

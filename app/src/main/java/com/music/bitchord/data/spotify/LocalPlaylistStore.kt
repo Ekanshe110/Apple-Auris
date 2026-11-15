@@ -65,6 +65,7 @@ object LocalPlaylistStore {
                             .takeIf { !it.isNullOrBlank() && it != "null" },
                         appleLookupError = sObj.optString("appleLookupError", null)
                             .takeIf { !it.isNullOrBlank() && it != "null" },
+                        atmosAvailable = sObj.optBoolean("atmosAvailable", false),
                     )
                     songs.add(song)
                 }
@@ -184,6 +185,7 @@ object LocalPlaylistStore {
                     sObj.put("isVideo", song.isVideo)
                     sObj.put("appleCatalogId", song.appleCatalogId)
                     sObj.put("appleLookupError", song.appleLookupError)
+                    sObj.put("atmosAvailable", song.atmosAvailable)
                     songsArray.put(sObj)
                 }
                 pObj.put("songs", songsArray)
