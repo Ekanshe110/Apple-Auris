@@ -80,6 +80,7 @@ fun AppleLibraryScreen(
     }
     val state by scope.state.collectAsStateWithLifecycle()
     val activeListState = if (detailId == null) listState else detailListState
+    val coroutineScope = rememberCoroutineScope()
 
     // Reset detail scroll when opening a different detail.
     LaunchedEffect(detailId) {
@@ -167,7 +168,7 @@ fun AppleLibraryScreen(
             // A subtle top indicator when an already-loaded list is refreshing.
             if (state.refreshing) {
                 LinearProgressIndicator(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, top = 4.dp),
+                    modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 4.dp),
                 )
             }
             Spacer(Modifier.height(8.dp))
@@ -190,7 +191,7 @@ fun AppleLibraryScreen(
             state.failure != null -> item {
                 Column(Modifier.padding(horizontal = 20.dp)) {
                     Message(state.failure ?: "Apple Music library is unavailable", error = true)
-                    Button(onClick = { scope.open(config) }) { Text("Retry") }
+                    Button(onClick = { coroutineScope.launch { scope.open(config) } }) { Text("Retry") }
                 }
             }
         }

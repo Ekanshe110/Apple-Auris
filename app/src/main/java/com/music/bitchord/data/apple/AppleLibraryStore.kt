@@ -286,7 +286,7 @@ object AppleLibraryStore {
         }
 
     /** The one cached listing for this collection or detail. */
-    fun scope(
+    internal fun scope(
         config: SourceConfig,
         collection: AppleLibraryCollection,
         collectionId: String?,
