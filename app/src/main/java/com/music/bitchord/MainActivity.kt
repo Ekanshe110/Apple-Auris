@@ -251,7 +251,6 @@ import com.music.bitchord.ui.components.LocalCollectionActions
 import com.music.bitchord.ui.components.ConfirmationAlert
 import com.music.bitchord.ui.components.DownloadManagerSheet
 import com.music.bitchord.ui.components.PlaylistPickerSheet
-import com.music.bitchord.ui.components.ApplePlaylistPickerSheet
 import com.music.bitchord.ui.components.PodcastEpisodeSheet
 import com.music.bitchord.ui.components.FolderPickerSheet
 import com.music.bitchord.ui.components.ReorderPlaylistSheet
@@ -1020,9 +1019,6 @@ private fun BitChordApp(
     // shut. Separate from [songActions] for the same reason as [playlistTarget]:
     // the menu closes behind it rather than two sheets stacking.
     var folderTarget by remember { mutableStateOf<Song?>(null) }
-    // Which track is being put into an Apple Music library playlist, or null when
-    // the picker is shut.
-    var applePlaylistTarget by remember { mutableStateOf<Song?>(null) }
     // The picker opened from the Library's "+" tile, where there is no track
     // and making the folder is the whole errand.
     var creatingFolder by remember { mutableStateOf(false) }
@@ -4018,13 +4014,6 @@ private fun BitChordApp(
                         viewModel.loadApplePlaylists(appleCatalogConfig)
                     }
                 },
-                onAddToApplePlaylist = if (appleCatalogConfig != null && !song.appleCatalogId.isNullOrBlank()) {
-                    {
-                        songActions = null
-                        applePlaylistTarget = song
-                        viewModel.loadApplePlaylists(appleCatalogConfig)
-                    }
-                } else null,
                 onRemoveFromFolder = openFolder?.let { folder ->
                     {
                         songActions = null
@@ -6664,42 +6653,6 @@ private fun BitChordApp(
                         dismiss()
                     },
                 )
-            }
-        }
-
-        // ---- Add to Apple Music playlist ----
-        applePlaylistTarget?.let { targetSong ->
-            val appleConfig = appleCatalogConfig
-            if (appleConfig != null) {
-                val applePlaylists by viewModel.applePlaylists.collectAsStateWithLifecycle()
-                val dismiss = {
-                    applePlaylistTarget = null
-                    viewModel.resetApplePlaylists()
-                }
-                BackHandler(onBack = dismiss)
-                ModalBottomSheet(
-                    onDismissRequest = dismiss,
-                    containerColor = MaterialTheme.colorScheme.background,
-                ) {
-                    ApplePlaylistPickerSheet(
-                        playlists = applePlaylists,
-                        onAdd = { picked ->
-                            picked.forEach { playlist ->
-                                scope.launch {
-                                    viewModel.addToApplePlaylist(appleConfig, playlist.id, targetSong)
-                                }
-                            }
-                            showQueueNotice(
-                                if (picked.size == 1) {
-                                    context.getString(R.string.track_added_to_apple_playlist, picked.first().title)
-                                } else {
-                                    context.getString(R.string.tracks_added_to_apple_playlists, picked.size)
-                                },
-                            )
-                            dismiss()
-                        },
-                    )
-                }
             }
         }
 

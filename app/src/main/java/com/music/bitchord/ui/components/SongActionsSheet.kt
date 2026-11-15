@@ -158,11 +158,6 @@ fun SongActionsSheet(
      */
     onAddToFolder: (() -> Unit)? = null,
     /**
-     * Opens the sheet that puts this track into one of the listener's Apple
-     * Music library playlists. Null hides the row.
-     */
-    onAddToApplePlaylist: (() -> Unit)? = null,
-    /**
      * Takes this track back out of the folder it is being shown in. Null
      * hides the row.
      */
@@ -353,14 +348,6 @@ fun SongActionsSheet(
                     label = stringResource(R.string.add_to_playlist),
                     accent = palette.accent,
                     onClick = onAddToPlaylist,
-                )
-            }
-            onAddToApplePlaylist?.takeIf { appleBacked }?.let {
-                ActionRow(
-                    icon = Icons.AutoMirrored.Rounded.PlaylistAdd,
-                    label = stringResource(R.string.add_to_apple_playlist),
-                    accent = palette.accent,
-                    onClick = it,
                 )
             }
             onRemoveFromPlaylist?.let {
