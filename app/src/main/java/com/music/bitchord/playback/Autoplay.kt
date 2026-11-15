@@ -103,11 +103,11 @@ internal suspend fun resolveYoutubeSeed(song: Song): Result<String?> {
 
     var searchFailure: Throwable? = null
     for (query in queries) {
-        when (val result = captureSourceFailure {
+        captureSourceFailure {
             YtMusicRepository.search(query, SearchFilter.SONGS)
-        }) {
-            is Result.Success -> {
-                val matched = result.value
+        }.fold(
+            onSuccess = { rows ->
+                val matched = rows
                     .mapNotNull { row ->
                         when (row) {
                             is SearchResult.TopTrack -> row.song
@@ -117,9 +117,11 @@ internal suspend fun resolveYoutubeSeed(song: Song): Result<String?> {
                     }
                     .let { TrackMatcher.best(it, target) }
                 if (matched != null) return Result.success(matched.videoId)
-            }
-            is Result.Failure -> if (searchFailure == null) searchFailure = result.exception
-        }
+            },
+            onFailure = { failure ->
+                if (searchFailure == null) searchFailure = failure
+            },
+        )
     }
     return searchFailure?.let { Result.failure(it) } ?: Result.success(null)
 }
