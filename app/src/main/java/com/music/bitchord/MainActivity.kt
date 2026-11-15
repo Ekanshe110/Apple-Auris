@@ -723,7 +723,7 @@ private class AppleLibraryPageState(
     var contentPadding: PaddingValues = PaddingValues()
     var onPlaySong: (Song) -> Unit = {}
     var onCollectionChange: (Int) -> Unit = {}
-    var onDetailChange: (String?, String?) -> Unit = {}
+    var onDetailChange: (String?, String?) -> Unit = { _, _ -> }
 }
 
 @Composable
