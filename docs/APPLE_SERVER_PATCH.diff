@@ -1,6 +1,6 @@
 diff -urN a/opt/auris-app/app.py b/opt/auris-app/app.py
 --- a/opt/auris-app/app.py	2026-11-15 10:22:43.706723907 +0000
-+++ b/opt/auris-app/app.py	2026-11-15 10:44:46.669477534 +0000
++++ b/opt/auris-app/app.py	2026-11-15 11:11:04.800438408 +0000
 @@ -936,6 +936,36 @@
                  "CREATE INDEX IF NOT EXISTS idx_dup_open "
                  "ON payment_duplicates(resolved_at, id)"
@@ -456,7 +456,7 @@ diff -urN a/opt/auris-app/app.py b/opt/auris-app/app.py
      config_token: str, request: Request, q: str = "", limit: int = 25
 diff -urN a/opt/auris-apple-addon/app.py b/opt/auris-apple-addon/app.py
 --- a/opt/auris-apple-addon/app.py	2026-11-15 10:22:43.707723897 +0000
-+++ b/opt/auris-apple-addon/app.py	2026-11-15 10:44:46.671477513 +0000
++++ b/opt/auris-apple-addon/app.py	2026-11-15 11:11:04.802438388 +0000
 @@ -741,6 +741,7 @@
          lossless = any("lossless" in t for t in traits)
          hi_res = any("hi-res" in t for t in traits)
@@ -485,7 +485,7 @@ diff -urN a/opt/auris-apple-addon/app.py b/opt/auris-apple-addon/app.py
                  "key": "quality",
 diff -urN a/opt/auris-apple-addon/manifest.json b/opt/auris-apple-addon/manifest.json
 --- a/opt/auris-apple-addon/manifest.json	2026-11-15 10:22:43.709723878 +0000
-+++ b/opt/auris-apple-addon/manifest.json	2026-11-15 10:44:46.672477502 +0000
++++ b/opt/auris-apple-addon/manifest.json	2026-11-15 11:11:04.803438378 +0000
 @@ -6,6 +6,7 @@
      "search",
      "stream"
@@ -496,7 +496,7 @@ diff -urN a/opt/auris-apple-addon/manifest.json b/opt/auris-apple-addon/manifest
        "key": "quality",
 diff -urN a/opt/auris-legacy/app.py b/opt/auris-legacy/app.py
 --- a/opt/auris-legacy/app.py	2026-11-15 10:22:43.702723945 +0000
-+++ b/opt/auris-legacy/app.py	2026-11-15 10:44:46.664477587 +0000
++++ b/opt/auris-legacy/app.py	2026-11-15 11:11:04.795438458 +0000
 @@ -499,6 +499,8 @@
  
  STORE_RE = re.compile(r"^[a-z]{2}$")
@@ -532,7 +532,7 @@ diff -urN a/opt/auris-legacy/app.py b/opt/auris-legacy/app.py
          }
          remember_track_meta(track)
          tracks.append(track)
-@@ -1212,9 +1219,405 @@
+@@ -1212,9 +1219,568 @@
      return [dict(track) for track in tracks]
  
  
@@ -572,6 +572,122 @@ diff -urN a/opt/auris-legacy/app.py b/opt/auris-legacy/app.py
 +    }
 +    remember_track_meta(track)
 +    return track
++
++
++def _storefront() -> str:
++    """The configured Apple storefront, defaulting to us."""
++    cfg = load_config()
++    sf = (cfg.get("storefront") or "us").strip().lower()
++    return sf if STORE_RE.match(sf) else "us"
++
++
++def _apple_home(limit: int = 20) -> list[dict]:
++    """Apple Music's personalised recommendations as structured shelves.
++
++    Preserves Apple's own recommendation groups: each shelf keeps the group's
++    title, subtitle and artwork, and items are returned as songs, albums or
++    playlists with exact catalogue ids. Albums are *not* expanded into tracks
++    here; the app loads tracks only when the listener opens the album page.
++    """
++    try:
++        developer_token = get_developer_token()
++        music_token = (WRAPPER_DATA / "MUSIC_TOKEN").read_text("utf-8").strip()
++    except OSError as exc:
++        raise AppleLibraryApiError(
++            401, "signed_out", "Apple Music account is not connected"
++        ) from exc
++    if not developer_token or not music_token:
++        raise AppleLibraryApiError(
++            401, "signed_out", "Apple Music account is not connected"
++        )
++
++    user_headers = {
++        "Authorization": f"Bearer {developer_token}",
++        "Music-User-Token": music_token,
++        "Origin": "https://music.apple.com",
++        "Accept": "application/json",
++    }
++    try:
++        raw = _http_get(
++            "https://amp-api.music.apple.com/v1/me/recommendations?limit=10",
++            user_headers,
++            timeout=20,
++        )
++        payload = json.loads(raw.decode("utf-8"))
++    except urllib.error.HTTPError as exc:
++        if exc.code == 401:
++            raise AppleLibraryApiError(
++                401, "signed_out", "Apple Music sign-in required"
++            ) from exc
++        if exc.code == 429:
++            raise AppleLibraryApiError(
++                429, "rate_limited", "Apple Music recommendations are rate limited"
++            ) from exc
++        raise AppleLibraryApiError(
++            502, "apple_upstream_error", "Apple Music recommendations request failed"
++        ) from exc
++    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
++        raise AppleLibraryApiError(
++            502, "invalid_upstream_response", "Apple Music returned invalid recommendations"
++        ) from exc
++
++    shelves: list[dict] = []
++    seen_shelves: set[str] = set()
++    for group in payload.get("data") or []:
++        attrs = group.get("attributes") or {}
++        title = str(attrs.get("title") or "").strip()
++        if not title:
++            continue
++        key = title.lower()
++        if key in seen_shelves:
++            continue
++        seen_shelves.add(key)
++        art = str((attrs.get("artwork") or {}).get("url") or "")
++        if art:
++            art = ARTWORK_RE.sub("600x600", art)
++        contents = ((group.get("relationships") or {}).get("contents") or {}).get("data") or []
++        items: list[dict] = []
++        for item in contents:
++            item_type = str(item.get("type") or "")
++            item_id = str(item.get("id") or "")
++            if not item_id:
++                continue
++            item_attrs = item.get("attributes") or {}
++            item_art = str((item_attrs.get("artwork") or {}).get("url") or "")
++            if item_art:
++                item_art = ARTWORK_RE.sub("600x600", item_art)
++            if item_type == "songs":
++                norm = _apple_recommendation_track(item)
++                if norm.get("id"):
++                    norm["type"] = "song"
++                    items.append(norm)
++            elif item_type == "albums":
++                items.append({
++                    "type": "album",
++                    "id": item_id,
++                    "title": str(item_attrs.get("name") or ""),
++                    "artist": str(item_attrs.get("artistName") or ""),
++                    "artworkURL": item_art or None,
++                })
++            elif item_type == "playlists":
++                items.append({
++                    "type": "playlist",
++                    "id": item_id,
++                    "title": str(item_attrs.get("name") or ""),
++                    "artist": str(item_attrs.get("curatorName") or ""),
++                    "artworkURL": item_art or None,
++                })
++        if not items:
++            continue
++        shelves.append({
++            "title": title,
++            "subtitle": str(attrs.get("subtitle") or attrs.get("description") or "").strip(),
++            "artworkURL": art or None,
++            "items": items,
++        })
++        if len(shelves) >= limit:
++            break
++    return shelves
 +
 +
 +def _apple_recommendations(limit: int = 40) -> list[dict]:
@@ -640,10 +756,7 @@ diff -urN a/opt/auris-legacy/app.py b/opt/auris-legacy/app.py
 +            elif item_type == "songs":
 +                direct_songs.append(item)
 +
-+    cfg = load_config()
-+    storefront = (cfg.get("storefront") or "us").strip().lower()
-+    if not STORE_RE.match(storefront):
-+        storefront = "us"
++    storefront = _storefront()
 +    songs = list(direct_songs)
 +    for album_id in album_ids:
 +        if len(songs) >= limit:
@@ -670,6 +783,50 @@ diff -urN a/opt/auris-legacy/app.py b/opt/auris-legacy/app.py
 +        tracks.append(normalized)
 +        if len(tracks) >= limit:
 +            break
++    return tracks
++
++
++def _apple_catalog_tracks(collection: str, collection_id: str, limit: int = 100) -> list[dict]:
++    """Tracks of a public Apple Music album or playlist.
++
++    The result is normalised to the same track shape used by recommendations
++    and search so the addon contract stays consistent.
++    """
++    if collection not in ("albums", "playlists"):
++        raise AppleLibraryApiError(400, "invalid_request", "collection must be albums or playlists")
++    if not APPLE_ID_RE.fullmatch(collection_id):
++        raise AppleLibraryApiError(400, "invalid_request", "invalid collection id")
++    developer_token = get_developer_token()
++    if not developer_token:
++        raise AppleLibraryApiError(401, "signed_out", "Apple Music developer token is not available")
++    headers = {
++        "Authorization": f"Bearer {developer_token}",
++        "Origin": "https://music.apple.com",
++        "Accept": "application/json",
++    }
++    storefront = _storefront()
++    encoded = urllib.parse.quote(collection_id, safe="")
++    url = (
++        f"https://amp-api.music.apple.com/v1/catalog/{storefront}/"
++        f"{collection}/{encoded}/tracks?limit={max(1, min(100, limit))}"
++    )
++    try:
++        raw = _http_get(url, headers, timeout=15)
++        payload = json.loads(raw.decode("utf-8"))
++    except urllib.error.HTTPError as exc:
++        if exc.code == 404:
++            raise AppleLibraryApiError(404, "not_found", f"Apple Music {collection} not found") from exc
++        if exc.code == 429:
++            raise AppleLibraryApiError(429, "rate_limited", f"Apple Music {collection} rate limited") from exc
++        raise AppleLibraryApiError(502, "apple_upstream_error", f"Apple Music {collection} request failed") from exc
++    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
++        raise AppleLibraryApiError(502, "invalid_upstream_response", f"Apple Music returned invalid {collection}") from exc
++
++    tracks: list[dict] = []
++    for song in payload.get("data") or []:
++        norm = _apple_recommendation_track(song)
++        if norm.get("id"):
++            tracks.append(norm)
 +    return tracks
 +
 +
@@ -917,6 +1074,12 @@ diff -urN a/opt/auris-legacy/app.py b/opt/auris-legacy/app.py
 +_library_page_cache: dict[str, tuple[float, dict]] = {}
 +_library_page_cache_lock = threading.Lock()
 +
++# Recommendation groups change slowly; cache the structured home feed for a
++# few minutes per slot so re-entry and multiple devices do not re-hit Apple.
++_HOME_CACHE_TTL = 600.0
++_home_cache: dict[str, tuple[float, list[dict]]] = {}
++_home_cache_lock = threading.Lock()
++
 +
 +def _library_page_cache_key(path: str, offset: int | None, limit: int | None) -> str:
 +    return f"{path}:{offset}:{limit}"
@@ -938,7 +1101,21 @@ diff -urN a/opt/auris-legacy/app.py b/opt/auris-legacy/app.py
  
  def _warm_search_top(tracks: list[dict]) -> None:
      """Warm the first search hit after the response is on the wire.
-@@ -2956,6 +3359,28 @@
+@@ -2821,7 +3387,7 @@
+ 
+         if path.startswith(prefix + "/") or path == prefix:
+             rest = path[len(prefix):].lstrip("/")
+-            return self._addon_route(rest, query)
++            return self._addon_route(method, rest, query)
+ 
+         # Panel
+         if path == "/" and method == "GET":
+@@ -2952,10 +3518,86 @@
+         except Exception:
+             return None
+ 
+-    def _addon_route(self, rest: str, query: dict) -> None:
++    def _addon_route(self, method: str, rest: str, query: dict) -> None:
          if rest == "manifest.json":
              return self._send_json(manifest_payload())
  
@@ -964,10 +1141,64 @@ diff -urN a/opt/auris-legacy/app.py b/opt/auris-legacy/app.py
 +                    502,
 +                )
 +
++        if rest == "home":
++            raw_limit = (query.get("limit") or ["20"])[0]
++            try:
++                limit = max(1, min(50, int(raw_limit)))
++            except (TypeError, ValueError):
++                return self._send_json({"error": "invalid limit"}, 400)
++            try:
++                now = time.time()
++                with _home_cache_lock:
++                    entry = _home_cache.get("home")
++                    if entry is not None and now - entry[0] < _HOME_CACHE_TTL:
++                        return self._send_json(
++                            {"shelves": entry[1]},
++                            extra={"Server-Timing": "apple;dur=0,cache;dur=1"},
++                        )
++                shelves = _apple_home(limit)
++                with _home_cache_lock:
++                    _home_cache["home"] = (now, shelves)
++                return self._send_json({"shelves": shelves})
++            except AppleLibraryApiError as exc:
++                return self._send_json(
++                    {"error": {"code": exc.code, "message": exc.message}}, exc.status
++                )
++            except Exception as exc:
++                traceback.print_exc()
++                return self._send_json(
++                    {"error": {
++                        "code": "apple_upstream_error",
++                        "message": "Apple Music home request failed",
++                    }},
++                    502,
++                )
++
++        if rest.startswith("catalog/"):
++            parts = rest.split("/")
++            if len(parts) == 3 and parts[1] in ("albums", "playlists"):
++                try:
++                    tracks = _apple_catalog_tracks(parts[1], parts[2])
++                    return self._send_json({"tracks": tracks})
++                except AppleLibraryApiError as exc:
++                    return self._send_json(
++                        {"error": {"code": exc.code, "message": exc.message}}, exc.status
++                    )
++                except Exception:
++                    traceback.print_exc()
++                    return self._send_json(
++                        {"error": {
++                            "code": "apple_upstream_error",
++                            "message": "Apple Music catalog request failed",
++                        }},
++                        502,
++                    )
++            return self._send_json({"error": "bad catalog path"}, 400)
++
          if rest == "search":
              q = (query.get("q") or [""])[0].strip()
              if not q:
-@@ -2971,6 +3396,86 @@
+@@ -2971,6 +3613,86 @@
                      {"tracks": [], "error": f"Apple search failed: {exc}"}, 502
                  )
  
@@ -1054,7 +1285,7 @@ diff -urN a/opt/auris-legacy/app.py b/opt/auris-legacy/app.py
          if rest.startswith("stream/"):
              song_id = urllib.parse.unquote(rest.split("/", 1)[1]).strip()
              if song_id.lower().startswith("am_"):
-@@ -4325,6 +4830,15 @@
+@@ -4325,6 +5047,15 @@
          "name": cfg.get("addon_name") or "Apple Music",
          "version": "1.0.0",
          "resources": ["search", "stream"],
@@ -1072,7 +1303,7 @@ diff -urN a/opt/auris-legacy/app.py b/opt/auris-legacy/app.py
          "settings": [
 diff -urN a/opt/auris-legacy/gate.py b/opt/auris-legacy/gate.py
 --- a/opt/auris-legacy/gate.py	2026-11-15 10:22:43.703723936 +0000
-+++ b/opt/auris-legacy/gate.py	2026-11-15 10:44:46.665477576 +0000
++++ b/opt/auris-legacy/gate.py	2026-11-15 11:11:04.797438438 +0000
 @@ -244,9 +244,34 @@
      return token, changed
  
@@ -1125,7 +1356,7 @@ diff -urN a/opt/auris-legacy/gate.py b/opt/auris-legacy/gate.py
          chunks = upstream.aiter_bytes() if upstream_encoded else upstream.aiter_raw()
 diff -urN a/opt/auris-legacy/manifest.json b/opt/auris-legacy/manifest.json
 --- a/opt/auris-legacy/manifest.json	2026-11-15 10:22:43.705723917 +0000
-+++ b/opt/auris-legacy/manifest.json	2026-11-15 10:44:46.667477555 +0000
++++ b/opt/auris-legacy/manifest.json	2026-11-15 11:11:04.798438428 +0000
 @@ -1,8 +1,22 @@
  {
    "id": "auris-apple-music",

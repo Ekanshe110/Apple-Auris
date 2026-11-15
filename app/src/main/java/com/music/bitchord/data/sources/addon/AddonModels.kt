@@ -278,6 +278,38 @@ data class AddonRecommendationsResponse(
     @SerialName("tracks") val tracks: List<AddonTrack> = emptyList(),
 )
 
+/** Structured Apple Music Home shelves from `/home`. */
+@Serializable
+data class AddonHomeResponse(
+    @SerialName("shelves") val shelves: List<AddonHomeShelf> = emptyList(),
+)
+
+@Serializable
+data class AddonHomeShelf(
+    @SerialName("title") val title: String = "",
+    @SerialName("subtitle") val subtitle: String = "",
+    @SerialName("artworkURL") val artworkURL: String? = null,
+    @SerialName("items") val items: List<AddonHomeItem> = emptyList(),
+)
+
+@Serializable
+data class AddonHomeItem(
+    @SerialName("type") val type: String = "song",
+    @SerialName("id") val id: String = "",
+    @SerialName("title") val title: String = "",
+    @SerialName("artist") val artist: String = "",
+    @SerialName("album") val album: String = "",
+    @SerialName("duration") val duration: Double? = null,
+    @SerialName("artworkURL") val artworkURL: String? = null,
+    @SerialName("format") val format: String = "",
+    @SerialName("audioQuality") val audioQuality: String = "",
+    @SerialName("audioMode") val audioMode: String? = null,
+    @SerialName("atmos") val atmos: Boolean? = null,
+    @SerialName("contentRating") val contentRating: String? = null,
+    @SerialName("explicit") val explicit: Boolean? = null,
+    @SerialName("isrc") val isrc: String? = null,
+)
+
 @Serializable
 data class AddonTrack(
     @SerialName("id") val id: String = "",

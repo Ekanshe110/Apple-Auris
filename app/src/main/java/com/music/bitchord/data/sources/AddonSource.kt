@@ -347,6 +347,17 @@ class AddonSource(
         }
     }
 
+    /**
+     * The addon's structured home shelves, when it publishes them.
+     */
+    suspend fun homeShelvesResult(limit: Int): Result<List<com.music.bitchord.data.sources.addon.AddonHomeShelf>> = withContext(Dispatchers.IO) {
+        if (limit <= 0) return@withContext Result.success(emptyList())
+        if (shutOut("home")) {
+            return@withContext Result.failure(AddonException("Addon is switched off"))
+        }
+        client.homeShelves(limit)
+    }
+
     // ── Stream ────────────────────────────────────────────────────────────
 
     override suspend fun stream(trackId: String, request: StreamRequest): SourceStream? =

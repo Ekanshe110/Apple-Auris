@@ -13,6 +13,7 @@ import com.music.bitchord.auth.adjacentProfile
 import com.music.bitchord.data.AppAnnouncements
 import com.music.bitchord.data.AppUpdateChecker
 import com.music.bitchord.data.LocalMediaRepository
+import com.music.bitchord.data.apple.AppleCatalogRepository
 import com.music.bitchord.data.apple.AppleEnrichment
 import com.music.bitchord.data.apple.AppleHomeSource
 import com.music.bitchord.data.apple.AppleLikedStore
@@ -153,6 +154,8 @@ private const val APPLE_FLOW_POOL_SIZE = 200
 private const val HOME_SCOPE_YOUTUBE = "YOUTUBE"
 private const val HOME_SCOPE_SPOTIFY = "SPOTIFY"
 private const val HOME_SCOPE_APPLE = "APPLE"
+private const val APPLE_ALBUM_PREFIX = "apple:album:"
+private const val APPLE_PLAYLIST_PREFIX = "apple:playlist:"
 
 /**
  * Whether Flow may open for the selected recommendation algorithm.
@@ -2798,10 +2801,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     ) {
         homeContinuation = null
         viewModelScope.launch {
-            val outcome = AppleHomeSource.shelf()
+            val outcome = AppleHomeSource.shelves()
             if (!isCurrentHomeLoad(identity, generation)) return@launch
-            val shelf = outcome.getOrNull()
-            if (shelf == null || shelf.items.isEmpty()) {
+            val shelves = outcome.getOrNull()
+            if (shelves.isNullOrEmpty()) {
                 if (reportEmpty && _home.value !is UiState.Success) {
                     _home.value = UiState.Error(
                         outcome.exceptionOrNull()?.message
@@ -2811,9 +2814,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             val visible = publishHomeShelves(
-                shelves = listOf(shelf),
+                shelves = shelves,
                 identity = identity,
                 generation = generation,
+                replace = true,
                 scope = HOME_SCOPE_APPLE,
             )
             _homeSourceEvidence.value = visible
@@ -2913,11 +2917,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         val apple = async {
             try {
-                val outcome = AppleHomeSource.shelf()
+                val outcome = AppleHomeSource.shelves()
                 HomeStage(
                     scope = HOME_SCOPE_APPLE,
                     label = "Apple Music",
-                    shelves = listOfNotNull(outcome.getOrNull()),
+                    shelves = outcome.getOrNull().orEmpty(),
                     reason = outcome.exceptionOrNull()?.friendly()
                         ?: "Apple Music returned no recommendations",
                 )
@@ -3085,10 +3089,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         generation: Long,
         replace: Boolean = true,
     ) {
-        val outcome = AppleHomeSource.shelf().getOrNull() ?: return
-        if (!isCurrentHomeLoad(identity, generation) || outcome.items.isEmpty()) return
+        val outcome = AppleHomeSource.shelves().getOrNull() ?: return
+        if (!isCurrentHomeLoad(identity, generation) || outcome.isEmpty()) return
         val visible = publishHomeShelves(
-            shelves = listOf(outcome),
+            shelves = outcome,
             identity = identity,
             generation = generation,
             replace = replace,
@@ -4498,6 +4502,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             openSpotifyCollection(browseId, title, subtitle, thumbnailUrl)
             return
         }
+        // Apple Music album or playlist cards from the structured Home feed.
+        if (browseId.startsWith(APPLE_ALBUM_PREFIX)) {
+            openAppleCollection("albums", browseId, title, subtitle, thumbnailUrl)
+            return
+        }
+        if (browseId.startsWith(APPLE_PLAYLIST_PREFIX)) {
+            openAppleCollection("playlists", browseId, title, subtitle, thumbnailUrl)
+            return
+        }
         val resolved = browseTypeOf(browseId, type)
         _detailStack.value += DetailPage(
             browseId = browseId,
@@ -4889,6 +4902,53 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             matchSpotifyTracks(browseId, page.tracks, ::setSongs)
+        }
+    }
+
+    /** Open a public Apple Music album or playlist page through the addon. */
+    private fun openAppleCollection(
+        collection: String,
+        browseId: String,
+        title: String,
+        subtitle: String,
+        thumbnailUrl: String?,
+    ) {
+        val id = when (collection) {
+            "albums" -> browseId.removePrefix(APPLE_ALBUM_PREFIX)
+            "playlists" -> browseId.removePrefix(APPLE_PLAYLIST_PREFIX)
+            else -> browseId
+        }
+        _detailStack.value += DetailPage(
+            browseId = browseId,
+            title = title,
+            subtitle = subtitle,
+            thumbnailUrl = thumbnailUrl,
+            songs = UiState.Loading,
+            type = if (collection == "albums") BrowseType.ALBUM else BrowseType.OTHER,
+        )
+        viewModelScope.launch {
+            val config = AppleCatalogRepository.activeConfig()
+            val state = if (config == null) {
+                UiState.Error("Apple Music is not configured")
+            } else {
+                AppleCatalogRepository.tracks(config, collection, id).fold(
+                    onSuccess = { tracks ->
+                        if (tracks.isEmpty()) {
+                            UiState.Error(text(R.string.no_tracks_here))
+                        } else {
+                            UiState.Success(tracks)
+                        }
+                    },
+                    onFailure = { UiState.Error(it.friendly()) },
+                )
+            }
+            _detailStack.value = _detailStack.value.map {
+                if (it.browseId == browseId && it.songs is UiState.Loading) {
+                    it.copy(songs = state)
+                } else {
+                    it
+                }
+            }
         }
     }
 

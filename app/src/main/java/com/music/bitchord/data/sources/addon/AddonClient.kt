@@ -459,6 +459,42 @@ class AddonClient(
         }.map { it.tracks }
     }
 
+    /**
+     * Structured Apple Music Home shelves.
+     *
+     * Unlike [recommendations], this returns shelves grouped the way Apple
+     * returned them, with albums and playlists left as collections rather than
+     * being expanded into tracks.
+     */
+    suspend fun homeShelves(limit: Int = 20): Result<List<AddonHomeShelf>> {
+        if (limit <= 0) return Result.success(emptyList())
+        val params = mapOf("limit" to limit.coerceAtMost(50).toString())
+        return recommendationFeeds.get(
+            key = "home:${params.toString()}",
+            describe = { "▶ addon home(${redact(baseUrl)}) limit=$limit" },
+        ) {
+            fetch<AddonHomeResponse>(endpoint(listOf("home"), params))
+        }.map { it.shelves }
+    }
+
+    /**
+     * Tracks of a public Apple Music album or playlist.
+     */
+    suspend fun catalogTracks(
+        collection: String,
+        id: String,
+        limit: Int = 100,
+    ): Result<List<AddonTrack>> {
+        if (collection != "albums" && collection != "playlists") {
+            return Result.failure(IllegalArgumentException("collection must be albums or playlists"))
+        }
+        val encoded = URLEncoder.encode(id, "UTF-8")
+        val params = mapOf("limit" to limit.coerceAtMost(100).toString())
+        return fetch<AddonRecommendationsResponse>(
+            endpoint(listOf("catalog", collection, encoded), params),
+        ).map { it.tracks }
+    }
+
     // ── Stream ────────────────────────────────────────────────────────────
 
     /**

@@ -5050,6 +5050,7 @@ private fun BitChordApp(
                             onSignIn = { webSession = WebSessionMode.SIGN_IN },
                             signInBannerDismissed = signInBannerDismissed,
                             onDismissSignInBanner = { signInBannerDismissed = true },
+                            showSignInBanner = homeProvider == HomeProvider.YOUTUBE,
                             onItemClick = { item, shelfTitle ->
                                 val song = shelfSong(item)
                                 // Hoisted because ShelfItem lives in :shared, and
