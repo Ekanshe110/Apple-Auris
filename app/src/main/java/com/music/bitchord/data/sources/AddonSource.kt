@@ -379,7 +379,7 @@ class AddonSource(
             // this addon has rather than on YouTube.
             var settleFor: SourceStream? = null
             val atmosAllowed = atmosWanted(request)
-            for (tier in tiersFor(request)) {
+            for (tier in tiersFor(request, trackId)) {
                 val result = client.stream(trackId, tier)
                 val answer = result.getOrNull()
                 val stream = when {
@@ -449,19 +449,25 @@ class AddonSource(
      * offered one — [ModuleSource.unplayable] would refuse it on the way back
      * — so asking would spend a request to be told no.
      */
-    private fun tiersFor(request: StreamRequest): List<String> = when {
-        request.wantsAtmos && DeviceCodecs.playsDolbyAtmos -> listOf(
-            AddonClient.TIER_ATMOS,
-            AddonClient.TIER_HI_RES,
-            AddonClient.TIER_LOSSLESS,
-            AddonClient.TIER_HIGH,
-        )
-        request.wantsLossless -> listOf(
-            AddonClient.TIER_LOSSLESS,
-            AddonClient.TIER_HI_RES,
-            AddonClient.TIER_HIGH,
-        )
-        else -> listOf(request.tier)
+    private fun tiersFor(request: StreamRequest, trackId: String): List<String> {
+        // The row's catalogue metadata is proof: an explicit `atmos = false`
+        // means the immersive request can only come back as the lossless file
+        // below it, so asking would cost a round trip before the real one.
+        val atmosAbsent = rows[trackId]?.atmos == false
+        return when {
+            request.wantsAtmos && DeviceCodecs.playsDolbyAtmos && !atmosAbsent -> listOf(
+                AddonClient.TIER_ATMOS,
+                AddonClient.TIER_HI_RES,
+                AddonClient.TIER_LOSSLESS,
+                AddonClient.TIER_HIGH,
+            )
+            request.wantsLossless -> listOf(
+                AddonClient.TIER_LOSSLESS,
+                AddonClient.TIER_HI_RES,
+                AddonClient.TIER_HIGH,
+            )
+            else -> listOf(request.tier)
+        }
     }
 
     /** Whether a format has said nothing that rules lossless out — see `SourceResolver.streamBest`. */
