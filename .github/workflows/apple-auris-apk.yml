@@ -88,6 +88,42 @@ jobs:
             test "$cert" = "$EXPECTED_SIGNER_SHA256"
           done
 
+      - name: Check APK size against the accepted baseline
+        run: |
+          set -euo pipefail
+          # Accepted sizes from 4a8241ac (artifact 14144304573). A micro-commit
+          # carries no new dependency, asset or native library, so any growth is
+          # either real code or a mistake. Gate: +1% or +500 KB, whichever is
+          # smaller.
+          declare -A baseline=(
+            [arm64-v8a]=46086632
+            [armeabi-v7a]=44965020
+            [x86_64]=48032990
+            [universal]=85696479
+          )
+          failed=0
+          for apk in app/build/outputs/apk/dev/release/*.apk; do
+            name="$(basename "$apk")"
+            abi="universal"
+            case "$name" in
+              *arm64-v8a*) abi="arm64-v8a" ;;
+              *armeabi-v7a*) abi="armeabi-v7a" ;;
+              *x86_64*) abi="x86_64" ;;
+            esac
+            base="${baseline[$abi]}"
+            limit=$(( base / 100 ))
+            if [ "$limit" -gt 512000 ]; then limit=512000; fi
+            size="$(stat -c%s "$apk")"
+            delta=$(( size - base ))
+            printf '%-48s %10d bytes  delta %+d  allowed +%d  (%s)\n' \
+              "$name" "$size" "$delta" "$limit" "$abi"
+            if [ "$delta" -gt "$limit" ]; then
+              echo "::error::$name grew ${delta} bytes, over the ${limit}-byte budget"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
