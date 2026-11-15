@@ -142,6 +142,7 @@ internal fun Song.asLibraryItem(): AddonLibraryItem = AddonLibraryItem(
     contentRating = contentRating,
     explicit = isExplicit,
     isrc = isrc,
+    atmos = atmosAvailable,
 )
 
 /**
