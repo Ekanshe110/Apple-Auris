@@ -1,17 +1,532 @@
-# Exact Apple Auris server deployment patch.
-# Apply from filesystem root with: patch -p1 < APPLE_SERVER_PATCH.diff
-# Active public path: nginx -> auris-legacy-gate -> per-slot legacy worker.
---- a/opt/auris-legacy/app.py
-+++ b/opt/auris-legacy/app.py
-@@ -548,0 +549 @@
-+                "contentRating", "explicit", "isrc",
-@@ -1050,0 +1052 @@
+diff -urN a/opt/auris-app/app.py b/opt/auris-app/app.py
+--- a/opt/auris-app/app.py	2026-11-15 10:22:43.706723907 +0000
++++ b/opt/auris-app/app.py	2026-11-15 10:22:43.715723821 +0000
+@@ -936,6 +936,36 @@
+                 "CREATE INDEX IF NOT EXISTS idx_dup_open "
+                 "ON payment_duplicates(resolved_at, id)"
+             )
++            await db.execute(
++                """
++                CREATE TABLE IF NOT EXISTS slot_events (
++                    id INTEGER PRIMARY KEY AUTOINCREMENT,
++                    ts INTEGER NOT NULL,
++                    event TEXT NOT NULL,
++                    slot_no INTEGER NOT NULL,
++                    discord_id TEXT NOT NULL DEFAULT '',
++                    username TEXT NOT NULL DEFAULT '',
++                    method TEXT NOT NULL DEFAULT '',
++                    amount_paise INTEGER NOT NULL DEFAULT 0,
++                    reserved_until INTEGER NOT NULL DEFAULT 0,
++                    payment_ref TEXT NOT NULL DEFAULT '',
++                    ip TEXT NOT NULL DEFAULT '',
++                    user_agent TEXT NOT NULL DEFAULT ''
++                )
++                """
++            )
++            await db.execute(
++                "CREATE INDEX IF NOT EXISTS idx_slot_events_slot "
++                "ON slot_events(slot_no, ts)"
++            )
++            await db.execute(
++                "CREATE INDEX IF NOT EXISTS idx_slot_events_user "
++                "ON slot_events(discord_id, ts)"
++            )
++            await db.execute(
++                "CREATE INDEX IF NOT EXISTS idx_slot_events_ts "
++                "ON slot_events(ts)"
++            )
+             cursor = await db.execute("PRAGMA table_info(upi_slots)")
+             columns = {str(row[1]) for row in await cursor.fetchall()}
+             if "payment_method" not in columns:
+@@ -951,6 +981,18 @@
+ 
+     @staticmethod
+     async def _expire(db: aiosqlite.Connection, now: int) -> None:
++        cur = await db.execute(
++            "SELECT slot_no, discord_id, username, payment_method, price_paise, "
++            "reserved_until FROM upi_slots WHERE status='RESERVED' "
++            "AND reserved_until < ?",
++            (now,),
++        )
++        for row in await cur.fetchall():
++            await UpiSlotDB.log_event(
++                db, "expired", int(row[0]), str(row[1] or ""),
++                str(row[2] or ""), str(row[3] or ""), int(row[4] or 0),
++                int(row[5] or 0),
++            )
+         await db.execute(
+             "UPDATE upi_slots SET status='AVAILABLE', discord_id=NULL, username='', "
+             "payment_method='', reserved_until=0, updated_at=? "
+@@ -972,6 +1014,19 @@
+                 str(row[0]) for row in await cursor.fetchall()
+                 if row and row[0]
+             ]
++            cur = await db.execute(
++                "SELECT slot_no, discord_id, username, payment_method, "
++                "price_paise, reserved_until FROM upi_slots "
++                "WHERE status='RESERVED' AND reserved_until < ?",
++                (now,),
++            )
++            expired_holds = await cur.fetchall()
++            for row in expired_holds:
++                await self.log_event(
++                    db, "expired", int(row[0]), str(row[1] or ""),
++                    str(row[2] or ""), str(row[3] or ""), int(row[4] or 0),
++                    int(row[5] or 0),
++                )
+             cursor = await db.execute(
+                 "UPDATE upi_slots SET status='AVAILABLE', discord_id=NULL, "
+                 "username='', payment_method='', reserved_until=0, updated_at=? "
+@@ -994,6 +1049,33 @@
+             await db.commit()
+             return held + max(0, int(paid.rowcount or 0)), expired_users
+ 
++    @staticmethod
++    async def log_event(
++        db: aiosqlite.Connection,
++        event: str,
++        slot_no: int,
++        discord_id: str = "",
++        username: str = "",
++        method: str = "",
++        amount_paise: int = 0,
++        reserved_until: int = 0,
++        payment_ref: str = "",
++        ip: str = "",
++        user_agent: str = "",
++    ) -> None:
++        await db.execute(
++            "INSERT INTO slot_events(ts,event,slot_no,discord_id,username,"
++            "method,amount_paise,reserved_until,payment_ref,ip,user_agent) "
++            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
++            (
++                int(time.time()), str(event)[:24], int(slot_no),
++                str(discord_id or ""), str(username or "")[:80],
++                str(method or "")[:16], int(amount_paise or 0),
++                int(reserved_until or 0), str(payment_ref or "")[:120],
++                str(ip or "")[:64], str(user_agent or "")[:300],
++            ),
++        )
++
+     async def reserve(
+         self, discord_id: str, username: str, method: str = "upi"
+     ) -> dict[str, Any] | None:
+@@ -1118,6 +1200,12 @@
+                     "payment_ref=?, paid_at=?, updated_at=? WHERE slot_no=?",
+                     (ref[:120], now, now, row["slot_no"]),
+                 )
++                await self.log_event(
++                    db, "paid", int(row["slot_no"]),
++                    str(row["discord_id"] or ""), str(row["username"] or ""),
++                    "upi", int(amount_paise or row["price_paise"] or 0),
++                    int(row["reserved_until"] or 0), ref[:120],
++                )
+                 await db.commit()
+                 payload = dict(row)
+                 payload.update(
+@@ -1165,6 +1253,12 @@
+                     "payment_ref=?, paid_at=?, updated_at=? WHERE slot_no=?",
+                     (ref[:120], now, now, int(slot_no)),
+                 )
++                await self.log_event(
++                    db, "paid", int(slot_no), str(row["discord_id"] or ""),
++                    str(row["username"] or ""), "binance",
++                    int(row["price_paise"] or 0), int(row["reserved_until"] or 0),
++                    ref[:120],
++                )
+                 await db.commit()
+                 payload = dict(row)
+                 payload["status"] = "PAID"
+@@ -1191,9 +1285,23 @@
+             sql += " AND payment_method=?"
+             params.append(str(method))
+         async with aiosqlite.connect(self.path) as db:
++            db.row_factory = aiosqlite.Row
++            cur = await db.execute(
++                "SELECT * FROM upi_slots WHERE slot_no=? AND status='RESERVED' "
++                "AND discord_id=?",
++                (int(slot_no), str(discord_id)),
++            )
++            row = await cur.fetchone()
+             cursor = await db.execute(sql, params)
++            released = cursor.rowcount > 0
++            if released and row is not None:
++                await self.log_event(
++                    db, "canceled", int(slot_no), str(row["discord_id"] or ""),
++                    str(row["username"] or ""), str(row["payment_method"] or ""),
++                    int(row["price_paise"] or 0), int(row["reserved_until"] or 0),
++                )
+             await db.commit()
+-            return cursor.rowcount > 0
++            return released
+ 
+     async def get_slot(self, slot_no: int) -> dict[str, Any] | None:
+         async with aiosqlite.connect(self.path) as db:
+@@ -1315,6 +1423,7 @@
+     lossless = any("lossless" in item for item in traits)
+     hi_res = any("hi-res" in item for item in traits)
+     duration_ms = attrs.get("durationInMillis")
++    content_rating = str(attrs.get("contentRating") or "").strip().lower()
+     track = {
+         "id": str(song.get("id") or ""),
+         "title": attrs.get("name") or "",
+@@ -1329,11 +1438,145 @@
+         ),
+         "audioMode": "DOLBY_ATMOS" if atmos else "STEREO",
+         "atmos": atmos,
++        "contentRating": content_rating or None,
++        "explicit": content_rating == "explicit" if content_rating else None,
+     }
+     remember_track_meta(track)
+     return track
+ 
+ 
++class _AppleLibraryHTTPError(Exception):
++    def __init__(self, status: int, code: str, message: str):
++        super().__init__(message)
++        self.status = status
++        self.code = code
++        self.message = message
++
++
++def _library_api_get(
++    record: dict[str, Any],
++    path: str,
++    offset: int | None = None,
++    limit: int | None = None,
++) -> dict[str, Any]:
++    developer_token = str(record.get("dev_token") or "").strip()
++    music_token = str(record.get("music_token") or "").strip()
++    if not developer_token or not music_token:
++        raise _AppleLibraryHTTPError(
++            401, "signed_out", "Apple Music account is not connected"
++        )
++    params: dict[str, str] = {}
++    if offset is not None:
++        params["offset"] = str(int(offset))
++    if limit is not None:
++        params["limit"] = str(int(limit))
++    response = requests.get(
++        f"https://amp-api.music.apple.com/v1/me/library{path}",
++        params=params,
++        headers={
++            "Authorization": f"Bearer {developer_token}",
++            "Music-User-Token": music_token,
++            "Origin": "https://music.apple.com",
++            "Accept": "application/json",
++            "User-Agent": "AppleAddon-Local/2.0",
++        },
++        timeout=20,
++    )
++    if response.status_code == 401:
++        raise _AppleLibraryHTTPError(
++            401, "signed_out", "Apple Music sign-in required"
++        )
++    if response.status_code == 403:
++        raise _AppleLibraryHTTPError(
++            403, "forbidden", "Apple Music account lacks library scope"
++        )
++    if response.status_code == 404:
++        raise _AppleLibraryHTTPError(
++            404, "not_found", "Apple Music library item was not found"
++        )
++    if response.status_code == 429:
++        raise _AppleLibraryHTTPError(
++            429, "rate_limited", "Apple Music library is rate limited"
++        )
++    if not response.ok:
++        raise _AppleLibraryHTTPError(
++            502, "apple_upstream_error", "Apple Music library request failed"
++        )
++    try:
++        data = response.json()
++    except ValueError as exc:
++        raise _AppleLibraryHTTPError(
++            502, "invalid_upstream_response", "Apple Music returned an invalid library response"
++        ) from exc
++    if not isinstance(data, dict):
++        raise _AppleLibraryHTTPError(
++            502, "invalid_upstream_response", "Apple Music returned an invalid library response"
++        )
++    return data
++
++
++def _normalize_library_item(raw: dict[str, Any]) -> dict[str, Any]:
++    attrs = raw.get("attributes") or {}
++    play_params = attrs.get("playParams") or {}
++    raw_id = str(raw.get("id") or "")
++    catalog_id = str(play_params.get("catalogId") or "")
++    if not catalog_id and raw_id.isdigit():
++        catalog_id = raw_id
++    artwork = str((attrs.get("artwork") or {}).get("url") or "")
++    if artwork:
++        artwork = ARTWORK_RE.sub("600x600", artwork)
++    duration_ms = attrs.get("durationInMillis")
++    content_rating = str(attrs.get("contentRating") or "").strip().lower()
++    return {
++        "id": raw_id,
++        "catalogId": catalog_id,
++        "streamId": catalog_id if str(raw.get("type") or "").startswith("library-songs") else "",
++        "title": str(attrs.get("name") or ""),
++        "artist": str(attrs.get("artistName") or ""),
++        "album": str(attrs.get("albumName") or ""),
++        "artworkURL": artwork,
++        "duration": (float(duration_ms) / 1000.0) if duration_ms else None,
++        "contentRating": content_rating or None,
++        "explicit": content_rating == "explicit" if content_rating else None,
++        "isrc": str(attrs.get("isrc") or "").strip() or None,
++    }
++
++
++def _normalize_library_page(
++    raw: dict[str, Any], offset: int, limit: int
++) -> dict[str, Any]:
++    rows = raw.get("data") or []
++    if not isinstance(rows, list):
++        rows = []
++    items = [_normalize_library_item(row) for row in rows if isinstance(row, dict)]
++    meta = raw.get("meta") or {}
++    total_value = meta.get("total") if isinstance(meta, dict) else None
++    total = int(total_value) if isinstance(total_value, (int, float)) else None
++    has_more = bool(raw.get("next"))
++    if total is not None:
++        has_more = has_more or (offset + len(items) < total)
++    return {
++        "items": items,
++        "offset": offset,
++        "limit": limit,
++        "total": total,
++        "hasMore": has_more,
++        "nextOffset": (offset + len(items)) if has_more and items else None,
++    }
++
++
++def _library_page_params(offset: int, limit: int) -> tuple[int, int]:
++    if offset < 0:
++        raise _AppleLibraryHTTPError(
++            400, "invalid_request", "offset must be non-negative"
++        )
++    if limit < 1 or limit > 100:
++        raise _AppleLibraryHTTPError(
++            400, "invalid_request", "limit must be from 1 to 100"
++        )
++    return offset, limit
++
++
+ _SEARCH_CACHE: dict[tuple[str, str, int], tuple[float, list[dict[str, Any]]]] = {}
+ _SEARCH_LOCK = threading.Lock()
+ _SEARCH_TTL = 120.0
+@@ -3505,6 +3748,18 @@
+         )
+     if slot is None:
+         raise HTTPException(409, detail="No booking slots available")
++    ip = (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
++          or (request.client.host if request.client else ""))
++    async with aiosqlite.connect(UPI_SLOTS.path) as db:
++        await UPI_SLOTS.log_event(
++            db, "reserved", int(slot["slot_no"]), user_id,
++            str(request.session.get("discord_username") or ""),
++            str(slot.get("payment_method") or "upi"),
++            int(slot.get("price_paise") or 0),
++            int(slot.get("reserved_until") or 0),
++            ip=ip, user_agent=request.headers.get("user-agent", ""),
++        )
++        await db.commit()
+     return _upi_payload(slot)
+ 
+ 
+@@ -4172,6 +4427,17 @@
+     )
+     payload["slot"] = int(slot["slot_no"])
+     payload["amountPaise"] = int(slot["price_paise"])
++    ip = (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
++          or (request.client.host if request.client else ""))
++    async with aiosqlite.connect(UPI_SLOTS.path) as db:
++        await UPI_SLOTS.log_event(
++            db, "reserved", int(slot["slot_no"]), user_id, username,
++            "binance", int(slot["price_paise"] or 0),
++            int(slot["reserved_until"] or 0),
++            f"binance:{payload.get('exactAmount') or ''}",
++            ip=ip, user_agent=request.headers.get("user-agent", ""),
++        )
++        await db.commit()
+     return payload
+ 
+ 
+@@ -4387,10 +4653,100 @@
+     return {
+         "id": "auris-apple-music",
+         "name": "Apple Music",
++        "version": "1.0.0",
+         "resources": ["search", "stream"],
++        "catalogueProvider": "apple-music",
++        "library": {
++            "provider": "apple-music",
++            "collections": ["playlists", "albums", "songs"],
++            "authentication": {
++                "type": "none",
++                "required": False,
++            },
++        },
+     }
+ 
+ 
++def _library_json_response(payload: dict[str, Any], status: int = 200) -> Response:
++    return Response(
++        content=json.dumps(payload),
++        status_code=status,
++        media_type="application/json",
++    )
++
++
++def _library_error_response(exc: _AppleLibraryHTTPError) -> Response:
++    return _library_json_response(
++        {"error": {"code": exc.code, "message": exc.message}},
++        exc.status,
++    )
++
++
++@app.get("/a/{config_token}/library/{collection}")
++async def addon_library_collection(
++    config_token: str,
++    collection: str,
++    offset: int = 0,
++    limit: int = 25,
++) -> Response:
++    if collection not in ("playlists", "albums", "songs"):
++        return _library_error_response(
++            _AppleLibraryHTTPError(404, "not_found", "Apple Music library route was not found")
++        )
++    account_id = _verify_config(config_token)
++    await _require_subscription(account_id)
++    try:
++        page_offset, page_limit = _library_page_params(offset, limit)
++        record = _record(account_id)
++        page = await run_in_threadpool(
++            _normalize_library_page,
++            _library_api_get(record, f"/{collection}", page_offset, page_limit),
++            page_offset,
++            page_limit,
++        )
++        return _library_json_response(page)
++    except _AppleLibraryHTTPError as exc:
++        return _library_error_response(exc)
++
++
++@app.get("/a/{config_token}/library/{collection}/{collection_id}/tracks")
++async def addon_library_tracks(
++    config_token: str,
++    collection: str,
++    collection_id: str,
++    offset: int = 0,
++    limit: int = 25,
++) -> Response:
++    if collection not in ("playlists", "albums", "songs"):
++        return _library_error_response(
++            _AppleLibraryHTTPError(404, "not_found", "Apple Music library route was not found")
++        )
++    account_id = _verify_config(config_token)
++    await _require_subscription(account_id)
++    try:
++        page_offset, page_limit = _library_page_params(offset, limit)
++        record = _record(account_id)
++        if collection == "songs":
++            raw = await run_in_threadpool(
++                _library_api_get,
++                record,
++                f"/songs/{quote(collection_id, safe='')}",
++            )
++            return _library_json_response(_normalize_library_page(raw, 0, 1))
++        raw = await run_in_threadpool(
++            _library_api_get,
++            record,
++            f"/{collection}/{quote(collection_id, safe='')}/tracks",
++            page_offset,
++            page_limit,
++        )
++        return _library_json_response(
++            _normalize_library_page(raw, page_offset, page_limit)
++        )
++    except _AppleLibraryHTTPError as exc:
++        return _library_error_response(exc)
++
++
+ @app.get("/a/{config_token}/search")
+ async def addon_search(
+     config_token: str, request: Request, q: str = "", limit: int = 25
+diff -urN a/opt/auris-apple-addon/app.py b/opt/auris-apple-addon/app.py
+--- a/opt/auris-apple-addon/app.py	2026-11-15 10:22:43.707723897 +0000
++++ b/opt/auris-apple-addon/app.py	2026-11-15 10:22:43.716723811 +0000
+@@ -741,6 +741,7 @@
+         lossless = any("lossless" in t for t in traits)
+         hi_res = any("hi-res" in t for t in traits)
+         duration_ms = attrs.get("durationInMillis")
 +        content_rating = str(attrs.get("contentRating") or "").strip().lower()
-@@ -1069,0 +1072,3 @@
+         song_id = str(song.get("id") or "")
+         remember_track_atmos(song_id, atmos)
+         tracks.append(
+@@ -757,6 +758,9 @@
+                 ),
+                 "audioMode": "DOLBY_ATMOS" if atmos else "STEREO",
+                 "atmos": atmos,
++                "contentRating": content_rating or None,
++                "explicit": content_rating == "explicit" if content_rating else None,
++                "isrc": str(attrs.get("isrc") or "").strip() or None,
+             }
+         )
+     return [t for t in tracks if t["id"]]
+@@ -3536,6 +3540,7 @@
+         "name": cfg.get("addon_name") or "Apple Music",
+         "version": cfg.get("version") or "1.0.0",
+         "resources": ["search", "stream"],
++        "catalogueProvider": "apple-music",
+         "settings": [
+             {
+                 "key": "quality",
+diff -urN a/opt/auris-apple-addon/manifest.json b/opt/auris-apple-addon/manifest.json
+--- a/opt/auris-apple-addon/manifest.json	2026-11-15 10:22:43.709723878 +0000
++++ b/opt/auris-apple-addon/manifest.json	2026-11-15 10:22:43.717723801 +0000
+@@ -6,6 +6,7 @@
+     "search",
+     "stream"
+   ],
++  "catalogueProvider": "apple-music",
+   "settings": [
+     {
+       "key": "quality",
+diff -urN a/opt/auris-legacy/app.py b/opt/auris-legacy/app.py
+--- a/opt/auris-legacy/app.py	2026-11-15 10:22:43.702723945 +0000
++++ b/opt/auris-legacy/app.py	2026-11-15 10:22:43.710723869 +0000
+@@ -546,6 +546,7 @@
+             for key in (
+                 "id", "title", "artist", "album", "duration",
+                 "artworkURL", "audioQuality", "audioMode", "atmos",
++                "contentRating", "explicit", "isrc",
+             )
+         }
+         if len(_TRACK_META) > _TRACK_META_MAX:
+@@ -1048,6 +1049,7 @@
+         lossless = any("lossless" in t for t in traits)
+         hi_res = any("hi-res" in t for t in traits)
+         duration_ms = attrs.get("durationInMillis")
++        content_rating = str(attrs.get("contentRating") or "").strip().lower()
+         song_id = str(song.get("id") or "")
+         remember_track_atmos(song_id, atmos)
+         ext = attrs.get("extendedAssetUrls") or {}
+@@ -1067,6 +1069,9 @@
+             ),
+             "audioMode": "DOLBY_ATMOS" if atmos else "STEREO",
+             "atmos": atmos,
 +            "contentRating": content_rating or None,
 +            "explicit": content_rating == "explicit" if content_rating else None,
 +            "isrc": str(attrs.get("isrc") or "").strip() or None,
-@@ -1214,0 +1220,283 @@
+         }
+         remember_track_meta(track)
+         tracks.append(track)
+@@ -1212,9 +1217,317 @@
+     return [dict(track) for track in tracks]
+ 
+ 
 +def _apple_recommendation_track(song: dict) -> dict:
 +    """Normalize one Apple catalogue song without changing its exact id."""
 +    attrs = song.get("attributes") or {}
@@ -295,7 +810,41 @@
 +    return offset, limit
 +
 +
-@@ -2958,0 +3247,22 @@
+ _search_warm_lock = threading.Lock()
+ _search_warm_last = 0.0
+ 
++# Short-lived cache for library pages. Auth errors are never cached because
++# _library_api_get raises before returning. Only successful upstream pages
++# are stored, keyed by the exact request.
++_LIBRARY_PAGE_CACHE_TTL = 20.0
++_library_page_cache: dict[str, tuple[float, dict]] = {}
++_library_page_cache_lock = threading.Lock()
++
++
++def _library_page_cache_key(path: str, offset: int | None, limit: int | None) -> str:
++    return f"{path}:{offset}:{limit}"
++
++
++def _cached_library_page(path: str, offset: int | None, limit: int | None) -> dict:
++    """Read one library page, caching successful upstream answers briefly."""
++    key = _library_page_cache_key(path, offset, limit)
++    now = time.time()
++    with _library_page_cache_lock:
++        entry = _library_page_cache.get(key)
++        if entry is not None and now - entry[0] < _LIBRARY_PAGE_CACHE_TTL:
++            return entry[1]
++    raw = _library_api_get(path, offset, limit)
++    with _library_page_cache_lock:
++        _library_page_cache[key] = (now, raw)
++    return raw
++
+ 
+ def _warm_search_top(tracks: list[dict]) -> None:
+     """Warm the first search hit after the response is on the wire.
+@@ -2956,6 +3269,28 @@
+         if rest == "manifest.json":
+             return self._send_json(manifest_payload())
+ 
 +        if rest == "recommendations":
 +            raw_limit = (query.get("limit") or ["40"])[0]
 +            try:
@@ -318,13 +867,19 @@
 +                    502,
 +                )
 +
-@@ -2973,0 +3284,33 @@
+         if rest == "search":
+             q = (query.get("q") or [""])[0].strip()
+             if not q:
+@@ -2971,6 +3306,39 @@
+                     {"tracks": [], "error": f"Apple search failed: {exc}"}, 502
+                 )
+ 
 +        if rest == "library" or rest.startswith("library/"):
 +            parts = [urllib.parse.unquote(part) for part in rest.split("/") if part]
 +            try:
 +                if len(parts) == 2 and parts[1] in ("playlists", "albums", "songs"):
 +                    offset, limit = _library_page_params(query)
-+                    raw = _library_api_get(f"/{parts[1]}", offset, limit)
++                    raw = _cached_library_page(f"/{parts[1]}", offset, limit)
 +                    return self._send_json(_library_page(raw, offset, limit))
 +                if len(parts) == 4 and parts[1] in ("playlists", "albums", "songs") and parts[3] == "tracks":
 +                    collection, collection_id = parts[1], parts[2]
@@ -333,12 +888,12 @@
 +                            400, "invalid_request", "collection id is required"
 +                        )
 +                    if collection == "songs":
-+                        raw = _library_api_get(
++                        raw = _cached_library_page(
 +                            f"/songs/{urllib.parse.quote(collection_id, safe='')}"
 +                        )
 +                        return self._send_json(_library_page(raw, 0, 1))
 +                    offset, limit = _library_page_params(query)
-+                    raw = _library_api_get(
++                    raw = _cached_library_page(
 +                        f"/{collection}/{urllib.parse.quote(collection_id, safe='')}/tracks",
 +                        offset,
 +                        limit,
@@ -352,7 +907,13 @@
 +                    {"error": {"code": exc.code, "message": exc.message}}, exc.status
 +                )
 +
-@@ -4327,0 +4671,9 @@
+         if rest.startswith("stream/"):
+             song_id = urllib.parse.unquote(rest.split("/", 1)[1]).strip()
+             if song_id.lower().startswith("am_"):
+@@ -4325,6 +4693,15 @@
+         "name": cfg.get("addon_name") or "Apple Music",
+         "version": "1.0.0",
+         "resources": ["search", "stream"],
 +        "catalogueProvider": "apple-music",
 +        "library": {
 +            "provider": "apple-music",
@@ -362,9 +923,16 @@
 +                "required": False,
 +            },
 +        },
---- a/opt/auris-legacy/gate.py
-+++ b/opt/auris-legacy/gate.py
-@@ -246,0 +247,24 @@
+         # Declared so a host can send its own preference instead of guessing.
+         # The Apple gateway accepts all of these values and the Atmos hint.
+         "settings": [
+diff -urN a/opt/auris-legacy/gate.py b/opt/auris-legacy/gate.py
+--- a/opt/auris-legacy/gate.py	2026-11-15 10:22:43.703723936 +0000
++++ b/opt/auris-legacy/gate.py	2026-11-15 10:22:43.712723849 +0000
+@@ -244,9 +244,34 @@
+     return token, changed
+ 
+ 
 +def _refresh_worker_sources(slot_dir: Path) -> None:
 +    """Refresh deployable worker code without touching per-slot state.
 +
@@ -389,9 +957,17 @@
 +        os.replace(tmp, dst)
 +
 +
-@@ -249,0 +274 @@
+ def _provision(slot: int, account_id: int) -> Path:
+     slot_dir = RUNTIME_ROOT / f"a{slot:02d}"
+     if (slot_dir / "app.py").is_file():
 +        _refresh_worker_sources(slot_dir)
-@@ -816,0 +842,8 @@
+         _write_tokens(slot_dir, account_id)
+         return slot_dir
+     if slot_dir.exists():
+@@ -814,6 +839,14 @@
+         if key.lower() not in ("content-encoding", "transfer-encoding", "connection")
+         and not (key.lower() == "content-length" and upstream_encoded)
+     }
 +    if is_media:
 +        # A progressive media response can end early when the player seeks or
 +        # abandons the track. The worker keeps the partial bytes for the next
@@ -400,11 +976,20 @@
 +        # Content-Range; the streamed body needs no declared length.
 +        out_headers.pop("Content-Length", None)
 +        out_headers.pop("content-length", None)
---- a/opt/auris-legacy/manifest.json
-+++ b/opt/auris-legacy/manifest.json
-@@ -3,0 +4 @@
+ 
+     async def body():
+         chunks = upstream.aiter_bytes() if upstream_encoded else upstream.aiter_raw()
+diff -urN a/opt/auris-legacy/manifest.json b/opt/auris-legacy/manifest.json
+--- a/opt/auris-legacy/manifest.json	2026-11-15 10:22:43.705723917 +0000
++++ b/opt/auris-legacy/manifest.json	2026-11-15 10:22:43.713723840 +0000
+@@ -1,8 +1,22 @@
+ {
+   "id": "auris-apple-music",
+   "name": "Apple Music",
 +  "version": "1.0.0",
-@@ -7,2 +8,15 @@
+   "resources": [
+     "search",
+     "stream"
 -  ]
 -}
 \ No newline at end of file
@@ -423,250 +1008,3 @@
 +    }
 +  }
 +}
---- a/opt/auris-app/app.py
-+++ b/opt/auris-app/app.py
-@@ -1317,0 +1318 @@
-+    content_rating = str(attrs.get("contentRating") or "").strip().lower()
-@@ -1331,0 +1333,2 @@
-+        "contentRating": content_rating or None,
-+        "explicit": content_rating == "explicit" if content_rating else None,
-@@ -1336,0 +1340,132 @@
-+class _AppleLibraryHTTPError(Exception):
-+    def __init__(self, status: int, code: str, message: str):
-+        super().__init__(message)
-+        self.status = status
-+        self.code = code
-+        self.message = message
-+
-+
-+def _library_api_get(
-+    record: dict[str, Any],
-+    path: str,
-+    offset: int | None = None,
-+    limit: int | None = None,
-+) -> dict[str, Any]:
-+    developer_token = str(record.get("dev_token") or "").strip()
-+    music_token = str(record.get("music_token") or "").strip()
-+    if not developer_token or not music_token:
-+        raise _AppleLibraryHTTPError(
-+            401, "signed_out", "Apple Music account is not connected"
-+        )
-+    params: dict[str, str] = {}
-+    if offset is not None:
-+        params["offset"] = str(int(offset))
-+    if limit is not None:
-+        params["limit"] = str(int(limit))
-+    response = requests.get(
-+        f"https://amp-api.music.apple.com/v1/me/library{path}",
-+        params=params,
-+        headers={
-+            "Authorization": f"Bearer {developer_token}",
-+            "Music-User-Token": music_token,
-+            "Origin": "https://music.apple.com",
-+            "Accept": "application/json",
-+            "User-Agent": "AppleAddon-Local/2.0",
-+        },
-+        timeout=20,
-+    )
-+    if response.status_code == 401:
-+        raise _AppleLibraryHTTPError(
-+            401, "signed_out", "Apple Music sign-in required"
-+        )
-+    if response.status_code == 403:
-+        raise _AppleLibraryHTTPError(
-+            403, "forbidden", "Apple Music account lacks library scope"
-+        )
-+    if response.status_code == 404:
-+        raise _AppleLibraryHTTPError(
-+            404, "not_found", "Apple Music library item was not found"
-+        )
-+    if response.status_code == 429:
-+        raise _AppleLibraryHTTPError(
-+            429, "rate_limited", "Apple Music library is rate limited"
-+        )
-+    if not response.ok:
-+        raise _AppleLibraryHTTPError(
-+            502, "apple_upstream_error", "Apple Music library request failed"
-+        )
-+    try:
-+        data = response.json()
-+    except ValueError as exc:
-+        raise _AppleLibraryHTTPError(
-+            502, "invalid_upstream_response", "Apple Music returned an invalid library response"
-+        ) from exc
-+    if not isinstance(data, dict):
-+        raise _AppleLibraryHTTPError(
-+            502, "invalid_upstream_response", "Apple Music returned an invalid library response"
-+        )
-+    return data
-+
-+
-+def _normalize_library_item(raw: dict[str, Any]) -> dict[str, Any]:
-+    attrs = raw.get("attributes") or {}
-+    play_params = attrs.get("playParams") or {}
-+    raw_id = str(raw.get("id") or "")
-+    catalog_id = str(play_params.get("catalogId") or "")
-+    if not catalog_id and raw_id.isdigit():
-+        catalog_id = raw_id
-+    artwork = str((attrs.get("artwork") or {}).get("url") or "")
-+    if artwork:
-+        artwork = ARTWORK_RE.sub("600x600", artwork)
-+    duration_ms = attrs.get("durationInMillis")
-+    content_rating = str(attrs.get("contentRating") or "").strip().lower()
-+    return {
-+        "id": raw_id,
-+        "catalogId": catalog_id,
-+        "streamId": catalog_id if str(raw.get("type") or "").startswith("library-songs") else "",
-+        "title": str(attrs.get("name") or ""),
-+        "artist": str(attrs.get("artistName") or ""),
-+        "album": str(attrs.get("albumName") or ""),
-+        "artworkURL": artwork,
-+        "duration": (float(duration_ms) / 1000.0) if duration_ms else None,
-+        "contentRating": content_rating or None,
-+        "explicit": content_rating == "explicit" if content_rating else None,
-+        "isrc": str(attrs.get("isrc") or "").strip() or None,
-+    }
-+
-+
-+def _normalize_library_page(
-+    raw: dict[str, Any], offset: int, limit: int
-+) -> dict[str, Any]:
-+    rows = raw.get("data") or []
-+    if not isinstance(rows, list):
-+        rows = []
-+    items = [_normalize_library_item(row) for row in rows if isinstance(row, dict)]
-+    meta = raw.get("meta") or {}
-+    total_value = meta.get("total") if isinstance(meta, dict) else None
-+    total = int(total_value) if isinstance(total_value, (int, float)) else None
-+    has_more = bool(raw.get("next"))
-+    if total is not None:
-+        has_more = has_more or (offset + len(items) < total)
-+    return {
-+        "items": items,
-+        "offset": offset,
-+        "limit": limit,
-+        "total": total,
-+        "hasMore": has_more,
-+        "nextOffset": (offset + len(items)) if has_more and items else None,
-+    }
-+
-+
-+def _library_page_params(offset: int, limit: int) -> tuple[int, int]:
-+    if offset < 0:
-+        raise _AppleLibraryHTTPError(
-+            400, "invalid_request", "offset must be non-negative"
-+        )
-+    if limit < 1 or limit > 100:
-+        raise _AppleLibraryHTTPError(
-+            400, "invalid_request", "limit must be from 1 to 100"
-+        )
-+    return offset, limit
-+
-+
-@@ -4389,0 +4525 @@
-+        "version": "1.0.0",
-@@ -4390,0 +4527,9 @@
-+        "catalogueProvider": "apple-music",
-+        "library": {
-+            "provider": "apple-music",
-+            "collections": ["playlists", "albums", "songs"],
-+            "authentication": {
-+                "type": "none",
-+                "required": False,
-+            },
-+        },
-@@ -4391,0 +4537,80 @@
-+
-+
-+def _library_json_response(payload: dict[str, Any], status: int = 200) -> Response:
-+    return Response(
-+        content=json.dumps(payload),
-+        status_code=status,
-+        media_type="application/json",
-+    )
-+
-+
-+def _library_error_response(exc: _AppleLibraryHTTPError) -> Response:
-+    return _library_json_response(
-+        {"error": {"code": exc.code, "message": exc.message}},
-+        exc.status,
-+    )
-+
-+
-+@app.get("/a/{config_token}/library/{collection}")
-+async def addon_library_collection(
-+    config_token: str,
-+    collection: str,
-+    offset: int = 0,
-+    limit: int = 25,
-+) -> Response:
-+    if collection not in ("playlists", "albums", "songs"):
-+        return _library_error_response(
-+            _AppleLibraryHTTPError(404, "not_found", "Apple Music library route was not found")
-+        )
-+    account_id = _verify_config(config_token)
-+    await _require_subscription(account_id)
-+    try:
-+        page_offset, page_limit = _library_page_params(offset, limit)
-+        record = _record(account_id)
-+        page = await run_in_threadpool(
-+            _normalize_library_page,
-+            _library_api_get(record, f"/{collection}", page_offset, page_limit),
-+            page_offset,
-+            page_limit,
-+        )
-+        return _library_json_response(page)
-+    except _AppleLibraryHTTPError as exc:
-+        return _library_error_response(exc)
-+
-+
-+@app.get("/a/{config_token}/library/{collection}/{collection_id}/tracks")
-+async def addon_library_tracks(
-+    config_token: str,
-+    collection: str,
-+    collection_id: str,
-+    offset: int = 0,
-+    limit: int = 25,
-+) -> Response:
-+    if collection not in ("playlists", "albums", "songs"):
-+        return _library_error_response(
-+            _AppleLibraryHTTPError(404, "not_found", "Apple Music library route was not found")
-+        )
-+    account_id = _verify_config(config_token)
-+    await _require_subscription(account_id)
-+    try:
-+        page_offset, page_limit = _library_page_params(offset, limit)
-+        record = _record(account_id)
-+        if collection == "songs":
-+            raw = await run_in_threadpool(
-+                _library_api_get,
-+                record,
-+                f"/songs/{quote(collection_id, safe='')}",
-+            )
-+            return _library_json_response(_normalize_library_page(raw, 0, 1))
-+        raw = await run_in_threadpool(
-+            _library_api_get,
-+            record,
-+            f"/{collection}/{quote(collection_id, safe='')}/tracks",
-+            page_offset,
-+            page_limit,
-+        )
-+        return _library_json_response(
-+            _normalize_library_page(raw, page_offset, page_limit)
-+        )
-+    except _AppleLibraryHTTPError as exc:
-+        return _library_error_response(exc)
---- a/opt/auris-apple-addon/app.py
-+++ b/opt/auris-apple-addon/app.py
-@@ -743,0 +744 @@
-+        content_rating = str(attrs.get("contentRating") or "").strip().lower()
-@@ -759,0 +761,3 @@
-+                "contentRating": content_rating or None,
-+                "explicit": content_rating == "explicit" if content_rating else None,
-+                "isrc": str(attrs.get("isrc") or "").strip() or None,
-@@ -3538,0 +3543 @@
-+        "catalogueProvider": "apple-music",
---- a/opt/auris-apple-addon/manifest.json
-+++ b/opt/auris-apple-addon/manifest.json
-@@ -8,0 +9 @@
-+  "catalogueProvider": "apple-music",

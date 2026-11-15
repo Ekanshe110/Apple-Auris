@@ -897,6 +897,8 @@ private fun BitChordApp(
     var showDiscord by remember { mutableStateOf(false) }
     var showSpotify by remember { mutableStateOf(false) }
     var showAppleLibrary by remember { mutableStateOf(false) }
+    var appleLibraryCollectionIndex by rememberSaveable { mutableIntStateOf(0) }
+    var appleLibraryDetailId by rememberSaveable { mutableStateOf<String?>(null) }
     var showDiscordLogin by remember { mutableStateOf(false) }
     var discordDialog by remember { mutableStateOf<DiscordDialog?>(null) }
     var songActions by remember { mutableStateOf<Song?>(null) }
@@ -1572,6 +1574,8 @@ private fun BitChordApp(
     val quickPicksListState = rememberLazyListState()
     val continueListeningListState = rememberLazyListState()
     val historyListState = rememberLazyListState()
+    val appleLibraryListState = rememberLazyListState()
+    val appleLibraryDetailListState = rememberLazyListState()
     val libraryShowAllGridState = rememberLazyGridState()
     val searchListState = rememberLazyListState()
     val currentListState = when (selectedTab) {
@@ -3628,8 +3632,9 @@ private fun BitChordApp(
         BackHandler(enabled = showSpotify && detail == null) {
             showSpotify = false
         }
-        BackHandler(enabled = showAppleLibrary && detail == null) {
+        BackHandler(enabled = showAppleLibrary && appleLibraryDetailId == null) {
             showAppleLibrary = false
+            selectedTab = TAB_LIBRARY
         }
         BackHandler(enabled = showAccountScrobbling && !showDiscord && !showSpotify) {
             showAccountScrobbling = false
@@ -3683,6 +3688,7 @@ private fun BitChordApp(
                 !showSources && !showListenTogether && !showEqualizer && !showReplay && selectedMoodGenre == null &&
                 !showDiscord && !showHistory && !showFlow && !showQuickPicks && !showGenres &&
                 !showAudiobooks && openAudiobook == null && itunesPodcastId == null &&
+                !showAppleLibrary &&
                 !searchVisualActive && selectedTab != TAB_HOME,
         ) {
             selectedTab = TAB_HOME
@@ -4559,6 +4565,17 @@ private fun BitChordApp(
                                     playWithResume(listOf(song), 0)
                                 },
                                 contentPadding = listPadding,
+                                collectionIndex = appleLibraryCollectionIndex,
+                                detailId = appleLibraryDetailId,
+                                onCollectionChange = { index ->
+                                    appleLibraryCollectionIndex = index
+                                    appleLibraryDetailId = null
+                                },
+                                onDetailChange = { id ->
+                                    appleLibraryDetailId = id
+                                },
+                                listState = appleLibraryListState,
+                                detailListState = appleLibraryDetailListState,
                             )
                         }
                     } else if (key == "discord") {
@@ -5543,7 +5560,13 @@ private fun BitChordApp(
                     pullFraction = { currentPull?.distanceFraction ?: 0f },
                     onBack = when {
                         showSpotify && detail == null -> ({ showSpotify = false })
-                        showAppleLibrary && detail == null -> ({ showAppleLibrary = false })
+                        showAppleLibrary && appleLibraryDetailId == null -> ({
+                            showAppleLibrary = false
+                            selectedTab = TAB_LIBRARY
+                        })
+                        showAppleLibrary && appleLibraryDetailId != null -> ({
+                            appleLibraryDetailId = null
+                        })
                         showDiscord -> ({ showDiscord = false })
                         showHistory -> ({ showHistory = false })
                         showFlow -> ({ showFlow = false })
