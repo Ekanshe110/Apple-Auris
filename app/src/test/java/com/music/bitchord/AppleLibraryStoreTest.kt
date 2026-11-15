@@ -189,6 +189,9 @@ class AppleLibraryStoreTest {
         assertTrue(oldest.job.isCancelled)
         assertFalse(scopes[1].job.isCancelled)
         assertFalse(scopes[16].job.isCancelled)
+        // The newest 16 scopes are still the same instances.
+        assertSame(scopes[1], scopeBy(config, "pl.2"))
+        assertSame(scopes[16], scopeBy(config, "pl.17"))
         // Re-reading an evicted key returns a fresh scope, not the cancelled one.
         assertNotSame(
             oldest,
@@ -199,9 +202,6 @@ class AppleLibraryStoreTest {
                 dispatcher = Dispatchers.Unconfined,
             ),
         )
-        // The newest 16 scopes are still the same instances.
-        assertSame(scopes[1], scopeBy(config, "pl.2"))
-        assertSame(scopes[16], scopeBy(config, "pl.17"))
     }
 
     @Test
