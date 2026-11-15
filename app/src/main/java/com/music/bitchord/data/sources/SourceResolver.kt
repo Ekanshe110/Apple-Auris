@@ -41,6 +41,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 object SourceResolver {
 
     private const val TAG = "BitChord"
+    private const val RENDITION_PARAM = "r"
 
     /**
      * What to ask a source for, right now.
@@ -120,10 +121,16 @@ object SourceResolver {
     suspend fun resolve(uri: Uri): SourceStream? {
         val configId = uri.getQueryParameter("s") ?: return null
         val trackId = uri.getQueryParameter("t") ?: return null
+        val request = when (uri.getQueryParameter(RENDITION_PARAM)) {
+            "atmos" -> if (DeviceCodecs.playsDolbyAtmos) StreamRequest.Atmos else StreamRequest.Lossless
+            "lossless" -> StreamRequest.Lossless
+            else -> null
+        }
         return resolve(
             configId = configId,
             trackId = trackId,
             target = targetIn(uri),
+            request = request ?: requestForNow(),
         )
     }
 
@@ -153,8 +160,8 @@ object SourceResolver {
         configId: String,
         trackId: String,
         target: TrackMatcher.Target,
+        request: StreamRequest = requestForNow(),
     ): SourceStream? {
-        val request = requestForNow()
         val active = SourceRegistry.activeForPlayback()
         val appleRole = SourceRegistry.isAppleStrictRouting(configId)
         if (appleRole) {
