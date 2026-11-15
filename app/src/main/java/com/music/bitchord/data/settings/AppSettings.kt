@@ -339,12 +339,10 @@ object AppSettings {
     val automixPerformanceMode = MutableStateFlow(AutomixPerformanceMode.BALANCED)
 
     /**
-     * Where the homepage, Flow and Autoplay get their content.
+     * Which catalogue, library, and playback routing the app owns.
      *
-     * Read through [HomeProvider] for what this does and does not change —
-     * briefly: the algorithm, not the audio, and not the Library. Changing it
-     * restarts the app, because Flow's and Autoplay's learning are trained
-     * against the provider that built them; see [HomeProvider].
+     * Read through [HomeProvider] for the exact boundary. Recommendation
+     * discovery is selected independently by [recommendationAlgorithm].
      */
     val homeProvider = MutableStateFlow(HomeProvider.YOUTUBE)
 
@@ -2135,7 +2133,7 @@ object AppSettings {
     /** Records the recommendation algorithm used by Home, Flow and Autoplay. */
     fun setRecommendationAlgorithm(value: RecommendationAlgorithm) {
         recommendationAlgorithm.value = value
-        prefs.edit().putString(KEY_RECOMMENDATION_ALGORITHM, value.name).commit()
+        prefs.edit().putString(KEY_RECOMMENDATION_ALGORITHM, value.name).apply()
     }
 
     /**

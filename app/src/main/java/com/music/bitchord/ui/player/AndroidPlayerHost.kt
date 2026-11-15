@@ -37,9 +37,14 @@ import com.music.bitchord.playback.AutomixPreview
 import com.music.bitchord.playback.AutomixProfiles
 import com.music.bitchord.playback.QueueSearch
 import com.music.bitchord.playback.QueueSuggestion
+import com.music.bitchord.playback.appleRecommendationPoolSize
+import com.music.bitchord.playback.interleaveRecommendationCandidates
+import com.music.bitchord.playback.selectUnseenAppleCandidates
+import com.music.bitchord.playback.youtubeRadioCandidates
 import com.music.bitchord.playback.cast.CastController
 import com.music.bitchord.playback.smart.AutomixOverride
 import dev.chrisbanes.haze.HazeState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -170,31 +175,62 @@ class AndroidPlayerHost(context: Context) : PlayerHost {
             // Music's radio.
             QueueSuggestion.SIMILAR -> {
                 val algorithm = AppSettings.recommendationAlgorithm.value
-                val candidates = mutableListOf<Song>()
-                if (algorithm.includes(RecommendationAlgorithm.SPOTIFY)) {
-                    candidates += runCatching {
-                        com.music.bitchord.data.spotify.SpotifyAlgorithm.more(song, 12)
-                    }.getOrDefault(emptyList())
+                val candidateLimit = QueueSearch.MAX_SUGGESTIONS
+                val spotifyCandidates = if (algorithm.includes(RecommendationAlgorithm.SPOTIFY)) {
+                    try {
+                        com.music.bitchord.data.spotify.SpotifyAlgorithm.more(song, candidateLimit)
+                    } catch (cancellation: CancellationException) {
+                        throw cancellation
+                    } catch (_: Throwable) {
+                        emptyList()
+                    }
+                } else {
+                    emptyList()
                 }
-                if (algorithm.includes(RecommendationAlgorithm.YOUTUBE)) {
-                    candidates += runCatching {
-                        YtMusicRepository.radio(song.videoId).getOrNull()
-                    }.getOrNull().orEmpty()
+                val youtubeCandidates = if (algorithm.includes(RecommendationAlgorithm.YOUTUBE)) {
+                    try {
+                        // A source-backed id is not a YouTube id. Resolve the
+                        // recording first, then ask YouTube for its radio.
+                        youtubeRadioCandidates(song).getOrThrow()
+                    } catch (cancellation: CancellationException) {
+                        throw cancellation
+                    } catch (_: Throwable) {
+                        emptyList()
+                    }
+                } else {
+                    emptyList()
                 }
-                if (algorithm.includes(RecommendationAlgorithm.APPLE)) {
-                    candidates += AppleHomeSource.tracks(12).getOrNull().orEmpty()
+                val appleCandidates = if (algorithm.includes(RecommendationAlgorithm.APPLE)) {
+                    val pool = AppleHomeSource
+                        .tracks(appleRecommendationPoolSize(candidateLimit))
+                        .getOrNull()
+                        .orEmpty()
+                    selectUnseenAppleCandidates(
+                        pool = pool,
+                        existing = listOf(song),
+                        limit = candidateLimit,
+                    )
+                } else {
+                    emptyList()
                 }
-                val merged = candidates.distinctBy { it.videoId }
+
+                // Interleave before QueueSearch truncates. Concatenating feeds
+                // lets Spotify fill all 25 visible rows and leaves YouTube and
+                // Apple with no representation in All mode.
+                val interleaved = interleaveRecommendationCandidates(
+                    groups = listOf(spotifyCandidates, youtubeCandidates, appleCandidates),
+                    limit = candidateLimit * 3,
+                )
                 if (AppSettings.appleRichModeEnabled) {
-                    // Strict Apple mode must not show a generic row as if it
-                    // were an Apple recommendation. Enrichment happens here,
-                    // on the user-requested queue path, never on ExoPlayer's
-                    // loader thread.
-                    AppleEnrichment.enrich(merged)
+                    // Strict Apple mode enriches first, then treats Apple's
+                    // exact catalogue id as the recording identity. Enrichment
+                    // stays on this user-requested queue path, never on
+                    // ExoPlayer's loader thread.
+                    AppleEnrichment.enrich(interleaved)
                         .filter { !it.appleCatalogId.isNullOrBlank() }
                         .distinctBy { it.appleCatalogId }
                 } else {
-                    merged
+                    interleaved.distinctBy { it.videoId }
                 }
             }
 

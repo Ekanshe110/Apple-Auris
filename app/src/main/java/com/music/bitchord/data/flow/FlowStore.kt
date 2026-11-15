@@ -8,6 +8,7 @@ import com.music.bitchord.data.flow.FlowMood
 import com.music.bitchord.data.flow.FlowTuner
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.data.settings.AppSettings
+import com.music.bitchord.data.settings.RecommendationAlgorithm
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -74,7 +75,7 @@ object FlowStore {
      * older build is read back as if it were current otherwise, and the mix
      * the listener sees is the one the previous build built.
      */
-    private const val SNAPSHOT_VERSION = 3
+    private const val SNAPSHOT_VERSION = 4
 
     /** A snapshot older than this rebuilds instead of restoring. */
     const val FLOW_TTL_MS = 24L * 60 * 60 * 1000
@@ -86,14 +87,24 @@ object FlowStore {
     fun snapshotAgeMs(): Long? =
         readSnapshot()?.let { (_, builtAt) -> System.currentTimeMillis() - builtAt }
 
-    fun saveSnapshot(songs: List<Song>) {
+    /**
+     * Saves the mix together with the algorithm that built it.
+     *
+     * The algorithm is part of the snapshot's identity, not metadata read at
+     * restore time. A build can outlive a settings change, so the caller passes
+     * the algorithm captured when that build began.
+     */
+    fun saveSnapshot(
+        songs: List<Song>,
+        algorithm: RecommendationAlgorithm,
+    ) {
         if (!this::prefs.isInitialized || songs.isEmpty()) return
         prefs.edit()
             .putString(KEY_FLOW_SNAPSHOT, encodeFlowSnapshot(songs))
             .putLong(KEY_FLOW_BUILT_AT, System.currentTimeMillis())
             .putInt(KEY_FLOW_SNAPSHOT_VERSION, SNAPSHOT_VERSION)
             .putInt(KEY_FLOW_SNAPSHOT_APP, BuildConfig.VERSION_CODE)
-            .putString(KEY_FLOW_ALGORITHM, AppSettings.recommendationAlgorithm.value.name)
+            .putString(KEY_FLOW_ALGORITHM, algorithm.name)
             .apply()
     }
 
@@ -119,7 +130,11 @@ object FlowStore {
             return null
         }
         val storedAlgorithm = prefs.getString(KEY_FLOW_ALGORITHM, null)
-        if (storedAlgorithm != null && storedAlgorithm != AppSettings.recommendationAlgorithm.value.name) {
+        val currentAlgorithm = AppSettings.recommendationAlgorithm.value
+        // A snapshot without an algorithm cannot be proven to match the
+        // current recommendation rules. Restoring it would restore a mix made
+        // by rules the app can no longer name.
+        if (!snapshotAlgorithmMatches(storedAlgorithm, currentAlgorithm)) {
             clearSnapshot()
             return null
         }
@@ -267,6 +282,17 @@ object FlowStore {
     }
 }
 
+/** Whether a stored snapshot was built by [current]. Missing names are rejected. */
+internal fun snapshotAlgorithmMatches(
+    stored: String?,
+    current: RecommendationAlgorithm,
+): Boolean = stored == current.name
+
+/** Keeps only rows with an exact Apple id, without replacing that id. */
+internal fun retainExactAppleRows(songs: List<Song>): List<Song> =
+    songs.filter { !it.appleCatalogId.isNullOrBlank() }
+        .distinctBy { it.appleCatalogId }
+
 /**
  * The persisted mix as plain text, split from the prefs IO so it unit
  * tests on the JVM: control separators can never appear in a field
@@ -278,7 +304,11 @@ fun encodeFlowSnapshot(songs: List<Song>): String =
             s.videoId, s.title, s.artist,
             s.albumName.orEmpty(), s.thumbnailUrl.orEmpty(),
             s.appleCatalogId.orEmpty(), s.appleLookupError.orEmpty(),
-            if (s.isExplicit == true) "1" else "",
+            when (s.isExplicit) {
+                true -> "1"
+                false -> "0"
+                null -> ""
+            },
             s.contentRating.orEmpty(), s.isrc.orEmpty(),
         ).joinToString("\u001f") { it.replace("\u001e", " ").replace("\u001f", " ") }
     }
@@ -297,7 +327,11 @@ fun decodeFlowSnapshot(text: String): List<Song> {
             albumName = f.getOrNull(3)?.takeIf { it.isNotBlank() },
             appleCatalogId = f.getOrNull(5)?.takeIf { it.isNotBlank() },
             appleLookupError = f.getOrNull(6)?.takeIf { it.isNotBlank() },
-            isExplicit = if (f.getOrNull(7) == "1") true else null,
+            isExplicit = when (f.getOrNull(7)) {
+                "1" -> true
+                "0" -> false
+                else -> null
+            },
             contentRating = f.getOrNull(8)?.takeIf { it.isNotBlank() },
             isrc = f.getOrNull(9)?.takeIf { it.isNotBlank() },
         )

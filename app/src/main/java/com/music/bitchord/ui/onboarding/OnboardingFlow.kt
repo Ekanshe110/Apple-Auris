@@ -128,10 +128,10 @@ fun SetupWizard(
     // on the page that owns the slider; this is what the flow remembers once
     // the page has let go of it.
     var intensity by remember { mutableFloatStateOf(AppSettings.liquidGlassIntensity.value) }
-    // The catalogue is the one answer that cannot be half-applied: Flow and
-    // Autoplay each train against whichever provider built them, which is why
-    // the settings screen restarts the app for it. What is remembered here is
-    // where it started, so the restart only happens if the listener moved it.
+    // The catalogue is the one answer that cannot be half-applied: it moves
+    // libraries and source-backed playback identity together, which is why the
+    // settings screen restarts the app for it. What is remembered here is where
+    // it started, so the restart only happens if the listener moved it.
     val providerAtEntry = remember { AppSettings.homeProvider.value }
     var provider by remember { mutableStateOf(providerAtEntry) }
     var picks by remember { mutableStateOf(OnboardingState.picks(context)) }

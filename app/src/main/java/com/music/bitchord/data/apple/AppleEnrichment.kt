@@ -298,7 +298,7 @@ object AppleEnrichment {
         val wantedTitle = normalizedTitle(song.title)
         if (wantedTitle.isBlank()) return null
         val wantedExplicit = explicitState(song)
-        val wantedRating = song.contentRating?.lowercase(Locale.ROOT)
+        val wantedRating = song.contentRating?.trim()?.lowercase(Locale.ROOT)
 
         val matches = candidates.mapNotNull { candidate ->
             val id = candidate.appleCatalogId?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
@@ -315,7 +315,7 @@ object AppleEnrichment {
                 return@mapNotNull null
             }
             val candidateExplicit = explicitState(candidate)
-            val candidateRating = candidate.contentRating?.lowercase(Locale.ROOT)
+            val candidateRating = candidate.contentRating?.trim()?.lowercase(Locale.ROOT)
             // An explicit request never falls back to a clean master. This is
             // a hard refusal, not a lower score: silently changing the words
             // in the track is worse than reporting that the requested master
@@ -351,8 +351,8 @@ object AppleEnrichment {
     /** Explicit state from the row's own flag, rating, or title marker. */
     internal fun explicitState(song: Song): Boolean? = when {
         song.isExplicit != null -> song.isExplicit
-        song.contentRating?.equals("explicit", ignoreCase = true) == true -> true
-        song.contentRating?.equals("clean", ignoreCase = true) == true -> false
+        song.contentRating?.trim()?.equals("explicit", ignoreCase = true) == true -> true
+        song.contentRating?.trim()?.equals("clean", ignoreCase = true) == true -> false
         EXPLICIT_TITLE_MARKER.containsMatchIn(song.title) -> true
         else -> null
     }
@@ -422,7 +422,9 @@ object AppleEnrichment {
             .split(NON_ALNUM)
             .filter { it.isNotEmpty() }
             .toMutableList()
-        if (tokens.lastOrNull() == "topic") tokens.removeLast()
+        if (tokens.lastOrNull() == "topic") {
+            tokens.removeAt(tokens.lastIndex)
+        }
         return tokens.toSet()
     }
 

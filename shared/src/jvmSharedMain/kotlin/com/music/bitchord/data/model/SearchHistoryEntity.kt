@@ -26,7 +26,35 @@ data class SearchHistoryEntity(
     val timestamp: Long = System.currentTimeMillis(),
     /** Exact Apple catalogue id for a track row, when it was enriched. */
     val appleCatalogId: String? = null,
-)
+    /** Explicit-content state of the exact recording. */
+    val isExplicit: Boolean? = null,
+    /** Apple content rating, when the catalogue published one. */
+    val contentRating: String? = null,
+    /** ISRC naming the exact recording. */
+    val isrc: String? = null,
+) {
+    companion object {
+        /**
+         * Build a track row from the song that was actually selected.
+         *
+         * Keeping this copy in one place stops search-history callers from
+         * persisting the catalogue id while silently dropping the explicit
+         * state, rating, and ISRC that identify the same recording.
+         */
+        fun fromSong(song: Song, subtitle: String = song.artist): SearchHistoryEntity =
+            SearchHistoryEntity(
+                id = song.videoId,
+                title = song.title,
+                subtitle = subtitle,
+                artworkUrl = song.thumbnailUrl,
+                entityType = EntityType.TRACK,
+                appleCatalogId = song.appleCatalogId,
+                isExplicit = song.isExplicit,
+                contentRating = song.contentRating,
+                isrc = song.isrc,
+            )
+    }
+}
 
 enum class EntityType {
     @SerialName("TRACK") TRACK,

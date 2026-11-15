@@ -22,6 +22,8 @@ class LikedCacheTest {
         albumName = "Album",
         durationText = "3:00",
         isExplicit = true,
+        contentRating = "explicit",
+        isrc = "ISRC-$id",
     )
 
     @Test
@@ -36,6 +38,8 @@ class LikedCacheTest {
         assertEquals("https://art/a.jpg", back[0].thumbnailUrl)
         assertEquals("3:00", back[0].durationText)
         assertEquals(true, back[0].isExplicit)
+        assertEquals("explicit", back[0].contentRating)
+        assertEquals("ISRC-a", back[0].isrc)
     }
 
     @Test
@@ -105,10 +109,20 @@ class LikedCacheTest {
     }
 
     @Test
-    fun `explicit flag survives only as explicit`() {
-        val plain = decodeLikedRows(encodeLikedRows(listOf(song("a").copy(isExplicit = null))))
-        assertNull(plain.single().isExplicit)
-        val falsey = decodeLikedRows(encodeLikedRows(listOf(song("a").copy(isExplicit = false))))
-        assertNull(falsey.single().isExplicit)
+    fun `explicit flag round trips all three states`() {
+        val encoded = encodeLikedRows(
+            listOf(
+                song("explicit").copy(isExplicit = true),
+                song("clean").copy(isExplicit = false),
+                song("unknown").copy(isExplicit = null),
+            ),
+        )
+        val encodedStates = encoded.split("\u001e").map { row -> row.split("\u001f")[6] }
+        assertEquals(listOf("1", "0", ""), encodedStates)
+
+        val decoded = decodeLikedRows(encoded)
+        assertEquals(true, decoded[0].isExplicit)
+        assertEquals(false, decoded[1].isExplicit)
+        assertNull(decoded[2].isExplicit)
     }
 }

@@ -914,10 +914,9 @@ fun SettingsScreen(
                     onClick = { pickingAutomixPerformance = true },
                 )
             }
-            // The content source, next to the other decisions about how the app
-            // picks music for the listener. YouTube Music and Spotify build
-            // discovery feeds; Apple Music keeps discovery on those catalogues
-            // but routes enriched rows through the Apple addon.
+            // The catalogue and playback source. It owns libraries, search
+            // routing, and whether Apple Music is the playback backend.
+            // Discovery has its own recommendation-algorithm setting below.
             val homeProviderTitle = stringResource(R.string.home_provider)
             row(homeProviderTitle, "provider", "spotify", "youtube", "algorithm", "flow") {
                 SettingsRow(
@@ -2290,9 +2289,9 @@ fun SettingsScreen(
                     pickingHomeProvider = false
                     if (provider != homeProvider) {
                         // Written before the restart so the new process reads it,
-                        // and the restart is what makes it total: Flow's and
-                        // Autoplay's learning were trained against the provider
-                        // being left behind. See [HomeProvider] and [AppRelaunch].
+                        // and the restart makes the source move total across
+                        // catalogues, libraries, and source-backed playback
+                        // identity. See [HomeProvider] and [AppRelaunch].
                         AppSettings.setHomeProvider(provider)
                         AppRelaunch.relaunch(context)
                     }
@@ -2632,16 +2631,12 @@ private fun HomeProvider.localizedLabel(): String = when (this) {
 }
 
 /**
- * Content-provider picker: which service's algorithm builds the homepage,
- * Flow and Autoplay.
+ * Content-source picker: which catalogue, library, and playback routing the
+ * app owns.
  *
- * Three rows now and room for more, which is why this is a list rather than a
- * switch: another provider is a row and an enum value, not a redesign.
- *
- * The note at the top says the app restarts, and it is not a warning to be
- * scrolled past — it is the mechanism. Flow and Autoplay each carry learning
- * trained against whichever provider built them, so the change is applied by
- * starting over rather than by swapping a feed underneath a live session.
+ * Recommendation discovery has its own picker below. The note at the top says
+ * the app restarts because changing the content source moves catalogues,
+ * libraries, and source-backed playback identity together.
  */
 @Composable
 private fun HomeProviderSheet(

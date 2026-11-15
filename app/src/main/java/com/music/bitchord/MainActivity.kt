@@ -683,6 +683,26 @@ internal fun visibleSearchSources(appleModeEnabled: Boolean): List<SearchSource>
     if (appleModeEnabled) add(SearchSource.APPLE)
 }
 
+/**
+ * Rows that may enter an Apple-mode queue.
+ *
+ * A bulk album, playlist, or Quick Picks action keeps every row with an exact
+ * Apple identity and drops only the unresolved discovery rows. One bad row
+ * must not cancel the whole collection.
+ */
+internal fun playableAppleSongs(
+    songs: List<Song>,
+    appleModeEnabled: Boolean,
+): List<Song> = songs.filterNot { song ->
+    appleCatalogueMatchUnavailable(song, appleModeEnabled)
+}
+
+/** The visible tab Search returns to, or Home when its remembered tab vanished. */
+internal fun visibleSearchReturnTab(lastSearchTab: Int, visibleTabs: List<Int>): Int =
+    lastSearchTab.takeIf { candidate ->
+        candidate != TAB_SEARCH && visibleTabs.contains(candidate)
+    } ?: TAB_HOME
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun BitChordApp(
@@ -1025,6 +1045,10 @@ private fun BitChordApp(
                 podcastUi.showContinueListening = false
                 podcastUi.episodeMenu = null
             }
+            // Search remembers the tab it came from. If that tab was the now
+            // hidden Podcasts tab, Back must not restore a destination the
+            // listener can no longer see.
+            if (lastSearchTab == TAB_PODCASTS) lastSearchTab = TAB_HOME
             // A search left on the podcasts filter would keep asking Apple's
             // catalogue for an answer nobody can see any more.
             if (viewModel.filter.value == SearchFilter.PODCASTS) {
@@ -1422,9 +1446,6 @@ private fun BitChordApp(
             Toast.makeText(context, APPLE_CATALOGUE_MATCH_UNAVAILABLE, Toast.LENGTH_LONG).show()
             true
         }
-    }
-    val rejectUnavailableAppleSong: (Song) -> Boolean = { song ->
-        rejectUnavailableAppleSongs(listOf(song))
     }
     LaunchedEffect(queueNotice?.id) {
         val shown = queueNotice ?: return@LaunchedEffect
@@ -1851,12 +1872,24 @@ private fun BitChordApp(
 
     val playFrom: (List<Song>, Int, QueueSource) -> Unit = playFrom@{ allSongs, allIndex, source ->
         val selectedSong = allSongs.getOrNull(allIndex)
-        if (rejectUnavailableAppleSongs(allSongs)) return@playFrom
+        // The tapped row is the one action that cannot continue without an
+        // exact Apple identity. Other unresolved rows in the same collection
+        // are filtered below; one bad neighbour must not cancel the album.
+        if (selectedSong != null && rejectUnavailableAppleSongs(listOf(selectedSong))) return@playFrom
         // A Spotify page lists songs it has not found on YouTube Music yet (or
         // never will); those can't be queued, so play the rest in their order.
         if (selectedSong?.isUnresolvedSpotify == true) return@playFrom
-        val songs = allSongs.filterNot { it.isUnresolvedSpotify }
-        val index = songs.indexOf(allSongs.getOrNull(allIndex)).coerceAtLeast(0)
+        val applePlayable = playableAppleSongs(allSongs, AppSettings.appleRichModeEnabled)
+        val appleOmitted = allSongs.size - applePlayable.size
+        val songs = applePlayable.filterNot { it.isUnresolvedSpotify }
+        if (appleOmitted > 0) {
+            Toast.makeText(
+                context,
+                context.getString(R.string.apple_catalogue_matches_skipped, appleOmitted),
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+        val index = songs.indexOf(selectedSong).coerceAtLeast(0)
         playRequestGeneration++
         activeRadioSeed = null
         scope.launch {
@@ -2067,7 +2100,7 @@ private fun BitChordApp(
      * where the surrounding list *is* the thing the user asked for.
      */
     val playRadio: (Song, QueueSource) -> Unit = radio@{ song, source ->
-        if (rejectUnavailableAppleSong(song)) return@radio
+        if (rejectUnavailableAppleSongs(listOf(song))) return@radio
         playRequestGeneration++
         activeRadioSeed = null
         scope.launch {
@@ -2131,7 +2164,7 @@ private fun BitChordApp(
      * replaced in one Media3 operation.
      */
     val startRadio: (Song) -> Unit = radio@{ song ->
-        if (rejectUnavailableAppleSong(song)) return@radio
+        if (rejectUnavailableAppleSongs(listOf(song))) return@radio
         val originalController = controller
         if (originalController != null && !refusedByHost()) {
             val request = ++playRequestGeneration
@@ -2259,7 +2292,7 @@ private fun BitChordApp(
         }
     }
     val addToQueue: (Song) -> Unit = queue@{ song ->
-        if (rejectUnavailableAppleSong(song)) return@queue
+        if (rejectUnavailableAppleSongs(listOf(song))) return@queue
         scope.launch {
             if (refusedByHost()) return@launch
             // The end of what the user queued, not the end of the queue: a song
@@ -2292,7 +2325,7 @@ private fun BitChordApp(
         }
     }
     val playNext: (Song) -> Unit = queue@{ song ->
-        if (rejectUnavailableAppleSong(song)) return@queue
+        if (rejectUnavailableAppleSongs(listOf(song))) return@queue
         scope.launch {
             if (refusedByHost()) return@launch
             controller?.let {
@@ -2401,7 +2434,19 @@ private fun BitChordApp(
      */
     val queueSongs: (List<Song>, Boolean) -> Unit = queue@{ songs, next ->
         if (songs.isNotEmpty()) {
-            if (rejectUnavailableAppleSongs(songs)) return@queue
+            val playable = playableAppleSongs(songs, AppSettings.appleRichModeEnabled)
+            val omitted = songs.size - playable.size
+            if (playable.isEmpty()) {
+                Toast.makeText(context, APPLE_CATALOGUE_MATCH_UNAVAILABLE, Toast.LENGTH_LONG).show()
+                return@queue
+            }
+            if (omitted > 0) {
+                Toast.makeText(
+                    context,
+                    context.getString(R.string.apple_catalogue_matches_skipped, omitted),
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
             scope.launch {
                 if (refusedByHost()) return@launch
                 val c = controller
@@ -2410,7 +2455,7 @@ private fun BitChordApp(
                     // player can only mean start here — and adding without
                     // preparing would leave the list sitting in a player that
                     // never gets round to it.
-                    play(songs, 0)
+                    play(playable, 0)
                 } else {
                     val toAdd = if (ListenTogether.state.value.inParty) {
                         val upcoming = (c.mediaItemCount - (c.currentMediaItemIndex + 1)).coerceAtLeast(0)
@@ -2419,9 +2464,9 @@ private fun BitChordApp(
                             showQueueNotice(context.getString(R.string.party_queue_full, 25))
                             return@launch
                         }
-                        songs.take(slotsLeft)
+                        playable.take(slotsLeft)
                     } else {
-                        songs
+                        playable
                     }
                     val timeline = player.queue.takeIf { q -> q.size == c.mediaItemCount }
                         ?: (0 until c.mediaItemCount).map { idx -> c.getMediaItemAt(idx).toSong() }
@@ -2610,9 +2655,20 @@ private fun BitChordApp(
      * a preview.
      */
     val playQuickPicks: (Boolean) -> Unit = quickPicks@{ shuffled ->
-        val songs = quickPicksSongs
-        if (songs.isNotEmpty()) {
-            if (rejectUnavailableAppleSongs(songs)) return@quickPicks
+        val songs = playableAppleSongs(quickPicksSongs, AppSettings.appleRichModeEnabled)
+        if (quickPicksSongs.isNotEmpty()) {
+            val omitted = quickPicksSongs.size - songs.size
+            if (songs.isEmpty()) {
+                Toast.makeText(context, APPLE_CATALOGUE_MATCH_UNAVAILABLE, Toast.LENGTH_LONG).show()
+                return@quickPicks
+            }
+            if (omitted > 0) {
+                Toast.makeText(
+                    context,
+                    context.getString(R.string.apple_catalogue_matches_skipped, omitted),
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
             playRequestGeneration++
             activeRadioSeed = null
             scope.launch {
@@ -2815,11 +2871,28 @@ private fun BitChordApp(
     val exitVisualSearch: () -> Unit = {
         searchKeyboardActive = false
         searchVisualActive = false
-        selectedTab = lastSearchTab.takeIf { it != TAB_SEARCH } ?: TAB_HOME
+        selectedTab = visibleSearchReturnTab(
+            lastSearchTab,
+            buildList {
+                add(TAB_HOME)
+                add(TAB_RADIO)
+                add(TAB_LIBRARY)
+                if (AppSettings.podcastsEnabled.value) add(TAB_PODCASTS)
+            },
+        )
     }
     val navSearchState = NavSearchState(
         visualActive = searchVisualActive,
         keyboardActive = searchKeyboardActive,
+        higherLayerActive = detail != null || showReplay || showReplayShare ||
+            replayStory != null || showSettings || showAccountScrobbling || showSources ||
+            showListenTogether || showListenTogetherMembers || showEqualizer || showDiscord ||
+            showSpotify || showAppleLibrary || showHistory || showFlow || showQuickPicks ||
+            showGenres || showAudiobooks || openAudiobook != null || itunesPodcastId != null ||
+            selectedMoodGenre != null || showUpdateDialog || showListenBrainzLogin ||
+            showLastfmLogin || discordDialog != null || editingSource != null ||
+            editingPartyServer || podcastUi.showContinueListening ||
+            libraryShowAll != null || detailActiveShelf != null,
         query = query,
         textValue = searchTextValue,
         onTextValueChange = {
@@ -5141,39 +5214,33 @@ private fun BitChordApp(
                             // order — play the one tapped and build a station from it.
                             onSongClick = { songs, index ->
                                 songs.getOrNull(index)?.let { song ->
-                                    viewModel.recordEntity(SearchHistoryEntity(
-                                        id = song.videoId,
-                                        title = song.title,
-                                        subtitle = song.artist.ifEmpty { "" },
-                                        artworkUrl = song.thumbnailUrl,
-                                        entityType = EntityType.TRACK,
-                                        appleCatalogId = song.appleCatalogId,
-                                    ))
+                                    viewModel.recordEntity(
+                                        SearchHistoryEntity.fromSong(
+                                            song,
+                                            subtitle = song.artist.ifEmpty { "" },
+                                        ),
+                                    )
                                     playRadio(song, QueueSource(searchLabel, PlaybackSourceType.SEARCH))
                                 }
                             },
                             onSongLongPress = openSongMenu,
                             onSongSwipe = onSongSwipe,
                             onTopResultPlay = { song ->
-                                viewModel.recordEntity(SearchHistoryEntity(
-                                    id = song.videoId,
-                                    title = song.title,
-                                    subtitle = song.artist.ifEmpty { "" },
-                                    artworkUrl = song.thumbnailUrl,
-                                    entityType = EntityType.TRACK,
-                                    appleCatalogId = song.appleCatalogId,
-                                ))
+                                viewModel.recordEntity(
+                                    SearchHistoryEntity.fromSong(
+                                        song,
+                                        subtitle = song.artist.ifEmpty { "" },
+                                    ),
+                                )
                                 playRadio(song, QueueSource(searchLabel, PlaybackSourceType.SEARCH))
                             },
                             onTopResultPlaylist = { song ->
-                                viewModel.recordEntity(SearchHistoryEntity(
-                                    id = song.videoId,
-                                    title = song.title,
-                                    subtitle = song.artist.ifEmpty { "" },
-                                    artworkUrl = song.thumbnailUrl,
-                                    entityType = EntityType.TRACK,
-                                    appleCatalogId = song.appleCatalogId,
-                                ))
+                                viewModel.recordEntity(
+                                    SearchHistoryEntity.fromSong(
+                                        song,
+                                        subtitle = song.artist.ifEmpty { "" },
+                                    ),
+                                )
                                 viewModel.loadPlaylists()
                                 playlistTarget = listOf(song)
                                 playlistTargetTitle = null
@@ -5243,6 +5310,9 @@ private fun BitChordApp(
                                                 artist = entity.subtitle,
                                                 thumbnailUrl = entity.artworkUrl,
                                                 appleCatalogId = entity.appleCatalogId,
+                                                isExplicit = entity.isExplicit,
+                                                contentRating = entity.contentRating,
+                                                isrc = entity.isrc,
                                             ),
                                             QueueSource(entity.title, PlaybackSourceType.SEARCH),
                                         )

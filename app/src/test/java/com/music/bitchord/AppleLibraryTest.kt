@@ -4,6 +4,7 @@ import com.music.bitchord.data.apple.toSong
 import com.music.bitchord.data.sources.addon.AddonLibraryItem
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** The Apple library identity rules that keep playback pinned to one addon. */
@@ -34,5 +35,52 @@ class AppleLibraryTest {
         ).toSong("apple-config")
 
         assertNull(song)
+    }
+
+    @Test
+    fun `content rating is trimmed and normalized`() {
+        val song = AddonLibraryItem(
+            id = "library-resource",
+            streamId = "apple-stream-id",
+            title = "Song",
+            contentRating = "  ExPlIcIt  ",
+        ).toSong("apple-config")
+
+        assertEquals("explicit", song?.contentRating)
+        assertTrue(song?.isExplicit == true)
+    }
+
+    @Test
+    fun `clean rating infers false but unknown rating stays unknown`() {
+        val clean = AddonLibraryItem(
+            id = "library-resource",
+            streamId = "apple-stream-id",
+            title = "Clean Song",
+            contentRating = " CLEAN ",
+        ).toSong("apple-config")
+        val unknown = AddonLibraryItem(
+            id = "library-resource",
+            streamId = "apple-stream-id",
+            title = "Unknown Song",
+            contentRating = " advisory ",
+        ).toSong("apple-config")
+
+        assertEquals(false, clean?.isExplicit)
+        assertNull(unknown?.isExplicit)
+        assertEquals("advisory", unknown?.contentRating)
+    }
+
+    @Test
+    fun `published explicit flag overrides rating inference`() {
+        val song = AddonLibraryItem(
+            id = "library-resource",
+            streamId = "apple-stream-id",
+            title = "Song",
+            contentRating = "clean",
+            explicit = true,
+        ).toSong("apple-config")
+
+        assertEquals(true, song?.isExplicit)
+        assertEquals("clean", song?.contentRating)
     }
 }

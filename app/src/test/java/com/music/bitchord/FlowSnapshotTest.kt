@@ -2,7 +2,10 @@ package com.music.bitchord
 
 import com.music.bitchord.data.flow.decodeFlowSnapshot
 import com.music.bitchord.data.flow.encodeFlowSnapshot
+import com.music.bitchord.data.flow.retainExactAppleRows
+import com.music.bitchord.data.flow.snapshotAlgorithmMatches
 import com.music.bitchord.data.model.Song
+import com.music.bitchord.data.settings.RecommendationAlgorithm
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -73,5 +76,38 @@ class FlowSnapshotTest {
     @Test
     fun `empty list encodes to nothing restorable`() {
         assertTrue(decodeFlowSnapshot(encodeFlowSnapshot(emptyList())).isEmpty())
+    }
+
+    @Test
+    fun `explicit state keeps all three values`() {
+        val songs = listOf(
+            song("clean").copy(isExplicit = false),
+            song("explicit").copy(isExplicit = true),
+            song("unknown").copy(isExplicit = null),
+        )
+
+        val back = decodeFlowSnapshot(encodeFlowSnapshot(songs))
+
+        assertEquals(false, back[0].isExplicit)
+        assertEquals(true, back[1].isExplicit)
+        assertNull(back[2].isExplicit)
+    }
+
+    @Test
+    fun `snapshot rejects missing and mismatched algorithm`() {
+        assertTrue(snapshotAlgorithmMatches("ALL", RecommendationAlgorithm.ALL))
+        assertTrue(!snapshotAlgorithmMatches(null, RecommendationAlgorithm.ALL))
+        assertTrue(!snapshotAlgorithmMatches("SPOTIFY", RecommendationAlgorithm.ALL))
+    }
+
+    @Test
+    fun `strict Apple rows keep their exact catalogue id`() {
+        val exact = song("exact").copy(appleCatalogId = "apple-id")
+        val unmatched = song("unmatched")
+
+        val rows = retainExactAppleRows(listOf(exact, unmatched))
+
+        assertEquals(1, rows.size)
+        assertEquals("apple-id", rows.single().appleCatalogId)
     }
 }

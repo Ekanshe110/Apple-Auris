@@ -27,6 +27,8 @@ internal enum class NavSearchBackAction {
 data class NavSearchState(
     val visualActive: Boolean = false,
     val keyboardActive: Boolean = false,
+    /** A detail page or overlay owns Back while it is above the search stack. */
+    val higherLayerActive: Boolean = false,
     val query: String = "",
     /**
      * The field's own text and caret.
@@ -59,6 +61,7 @@ data class NavSearchState(
  * restores the previous tab together with the folding player stack.
  */
 internal fun NavSearchState.backAction(): NavSearchBackAction = when {
+    higherLayerActive -> NavSearchBackAction.NONE
     keyboardActive -> NavSearchBackAction.CLOSE_KEYBOARD
     visualActive -> NavSearchBackAction.EXIT_VISUAL_SEARCH
     else -> NavSearchBackAction.NONE

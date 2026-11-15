@@ -154,10 +154,11 @@ private fun GlassFoldingNavBarChrome(
 ) {
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
-    // Only the keyboard layer owns Back in the bar itself. The visual search
+    // Only the keyboard layer owns Back in the bar itself, and only while no
+    // detail page or overlay is above the search stack. The visual search
     // state can be open under a detail page, Apple library, Settings, or
-    // another overlay, so visual Back is handled at the root layer where the
-    // detail/overlay handlers keep their precedence.
+    // another overlay, so the root layer disables both search actions whenever
+    // a higher layer owns Back.
     BackHandler(enabled = search.backAction() == NavSearchBackAction.CLOSE_KEYBOARD) {
         focusManager.clearFocus()
         keyboardController?.hide()

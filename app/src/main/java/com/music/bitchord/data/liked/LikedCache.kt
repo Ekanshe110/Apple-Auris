@@ -141,7 +141,11 @@ fun encodeLikedRows(songs: List<Song>): String =
         listOf(
             s.videoId, s.title, s.artist,
             s.albumName.orEmpty(), s.thumbnailUrl.orEmpty(),
-            s.durationText.orEmpty(), if (s.isExplicit == true) "1" else "",
+            s.durationText.orEmpty(), when (s.isExplicit) {
+                true -> "1"
+                false -> "0"
+                null -> ""
+            },
             // Which file, if any, plays this row. Without it a cached row was
             // indistinguishable from a row that was never downloaded, so a
             // liked song on the disk still played as a stream from cache —
@@ -165,7 +169,11 @@ fun decodeLikedRows(text: String): List<Song> {
             albumName = f.getOrNull(3)?.takeIf { it.isNotBlank() },
             thumbnailUrl = f.getOrNull(4)?.takeIf { it.isNotBlank() },
             durationText = f.getOrNull(5)?.takeIf { it.isNotBlank() },
-            isExplicit = if (f.getOrNull(6) == "1") true else null,
+            isExplicit = when (f.getOrNull(6)) {
+                "1" -> true
+                "0" -> false
+                else -> null
+            },
             // Absent in rows written before this field existed, which is the
             // point: an old blob decodes to rows that simply have no file yet,
             // and the next write fills them in.

@@ -24,6 +24,17 @@ class NavSearchBackTest {
     }
 
     @Test
+    fun `higher page owns Back before search keyboard`() {
+        val state = NavSearchState(
+            visualActive = true,
+            keyboardActive = true,
+            higherLayerActive = true,
+        )
+
+        assertEquals(NavSearchBackAction.NONE, state.backAction())
+    }
+
+    @Test
     fun `visual Back leaves search after keyboard is closed`() {
         val state = NavSearchState(
             visualActive = true,

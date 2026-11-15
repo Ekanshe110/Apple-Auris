@@ -143,6 +143,10 @@ private fun com.music.bitchord.data.sources.addon.AddonLibraryPage.state(
 /** The playable row for a library track, preserving its exact addon stream id. */
 fun AddonLibraryItem.toSong(configId: String): Song? {
     val streamId = streamId.takeIf { it.isNotBlank() } ?: return null
+    val normalizedRating = contentRating
+        ?.trim()
+        ?.lowercase(Locale.ROOT)
+        ?.takeIf { it.isNotEmpty() }
     return Song(
         videoId = SourceRegistry.trackKey(configId, streamId),
         title = title.ifBlank { "Untitled" },
@@ -153,12 +157,12 @@ fun AddonLibraryItem.toSong(configId: String): Song? {
             "${it / 60}:${"%02d".format(Locale.ROOT, it % 60)}"
         },
         appleCatalogId = catalogId.trim().takeIf { it.isNotEmpty() },
-        isExplicit = explicit ?: when (contentRating?.lowercase(Locale.ROOT)) {
+        isExplicit = explicit ?: when (normalizedRating) {
             "explicit" -> true
             "clean" -> false
             else -> null
         },
-        contentRating = contentRating?.lowercase(Locale.ROOT),
+        contentRating = normalizedRating,
         isrc = isrc?.trim()?.takeIf { it.isNotEmpty() },
     )
 }

@@ -2046,13 +2046,7 @@ fun BitChordDesktopApp(onRequestExit: () -> Unit = {}) {
 
     /** What the phone records for a search hit: the thing picked, not the words typed to find it. */
     fun recordSongSearch(song: Song) = DesktopSearchHistory.record(
-        SearchHistoryEntity(
-            id = song.videoId,
-            title = song.title,
-            subtitle = song.artist,
-            artworkUrl = song.thumbnailUrl,
-            entityType = EntityType.TRACK,
-        ),
+        desktopSearchHistoryEntity(song),
     )
 
     fun recordBrowseSearch(item: BrowseItem) = DesktopSearchHistory.record(
@@ -4036,6 +4030,10 @@ fun BitChordDesktopApp(onRequestExit: () -> Unit = {}) {
                                             title = entity.title,
                                             artist = entity.subtitle,
                                             thumbnailUrl = entity.artworkUrl,
+                                            appleCatalogId = entity.appleCatalogId,
+                                            isExplicit = entity.isExplicit,
+                                            contentRating = entity.contentRating,
+                                            isrc = entity.isrc,
                                         ),
                                         source = DesktopQueueSource(entity.title, PlaybackSourceType.SEARCH),
                                     )
@@ -7591,6 +7589,10 @@ private fun SearchResult.key(): String = when (this) {
     is SearchResult.Browse -> "browse:${item.browseId}"
 }
 
+/** Desktop's persisted search row for the exact song the listener selected. */
+internal fun desktopSearchHistoryEntity(song: Song): SearchHistoryEntity =
+    SearchHistoryEntity.fromSong(song)
+
 private fun ShelfItem.toSong(): Song {
     val parts = subtitle.split(" • ", " · ", " | ").filter(String::isNotBlank)
     // Android's InnertubeParser uses the first non-type/non-tally segment.
@@ -7605,6 +7607,11 @@ private fun ShelfItem.toSong(): Song {
         artist = artist,
         thumbnailUrl = thumbnailUrl,
         durationText = parts.firstOrNull { it.matches(SHELF_DURATION) },
+        isExplicit = isExplicit,
+        contentRating = contentRating,
+        isrc = isrc,
+        appleCatalogId = appleCatalogId,
+        appleLookupError = appleLookupError,
     )
 }
 

@@ -1,30 +1,20 @@
 package com.music.bitchord.data.settings
 
 /**
- * Where the app's *algorithmic* content comes from: the homepage, Flow, and
- * Autoplay.
+ * Which catalogue and playback backend the app owns.
  *
- * Not where the audio comes from, and not what the library shows. Those are
- * three different questions and it matters that they are answered separately:
+ * This is deliberately separate from recommendation discovery. It controls the
+ * provider's libraries, search routing, and source-backed playback identity:
  *
- *  - A home row is a *recommendation*, which one service or the other is better
- *    at. That is what this switches.
- *  - The audio for a row normally comes from whatever the source ranking picks
- *    — YouTube, an addon, a file on the device. Apple Music is the exception:
- *    discovery rows are enriched with an exact Apple catalogue id and then
- *    played through the configured Apple addon.
- *  - The Library tab keeps showing the listener's own YouTube and device
- *    content whichever provider is selected, because that is their library
- *    rather than a feed.
+ *  - YouTube Music and Spotify expose their own catalogues and libraries.
+ *  - Apple Music owns Apple catalogue playback. Discovery rows are enriched
+ *    with an exact Apple catalogue id and played through the configured Apple
+ *    addon.
  *
- * The switch is deliberately a whole-app one rather than per-screen: Flow
- * carries learning state (skips, bans, an hourly snapshot) and Autoplay
- * carries its own, and both are trained against whichever provider built them.
- * Mixing the two in one session would train each on the other's evidence, which
- * is why changing this restarts the app rather than quietly swapping a feed.
- *
- * More providers are expected; nothing outside this enum should assume there
- * are two.
+ * Recommendation algorithms are selected independently by
+ * [RecommendationAlgorithm]. Changing the catalogue can still require a
+ * restart because libraries, source routing, and playback identity all move
+ * together.
  */
 enum class HomeProvider {
     /** YouTube Music, through the app's own innertube session. The default. */

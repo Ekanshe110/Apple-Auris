@@ -102,6 +102,23 @@ class AppleRichModeTest {
     }
 
     @Test
+    fun `rating whitespace does not weaken explicit matching`() {
+        val wanted = song(isExplicit = true)
+        val clean = song(
+            id = "src:apple::123",
+            appleId = "123",
+            contentRating = " clean ",
+        )
+        val explicit = song(
+            id = "src:apple::456",
+            appleId = "456",
+            contentRating = " Explicit ",
+        )
+
+        assertEquals("456", AppleEnrichment.exactAppleId(wanted, listOf(clean, explicit)))
+    }
+
+    @Test
     fun `different durations outside tolerance are rejected`() {
         val wanted = song(duration = "4:00")
         val candidates = listOf(

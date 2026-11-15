@@ -116,9 +116,11 @@ import com.music.bitchord.data.sources.SourceResolver
 import com.music.bitchord.data.sources.TrackMatcher
 import com.music.bitchord.playback.AudioCache
 import com.music.bitchord.playback.StreamChoice
+import com.music.bitchord.playback.youtubeSeedFor
 import com.music.bitchord.ui.screens.CACHE_FOLDER_BROWSE_ID
 import com.music.bitchord.ui.screens.matchesSearch
 import com.music.bitchord.data.flow.FlowStore
+import com.music.bitchord.data.flow.retainExactAppleRows
 import com.music.bitchord.data.liked.LikedCache
 import com.music.bitchord.data.flow.FlowConfig
 import com.music.bitchord.data.flow.FlowMood
@@ -133,6 +135,40 @@ import java.util.concurrent.atomic.AtomicLong
 /** What the Search tab searches: YouTube Music, or the Local Music folder on this device. */
 /** How many tracks one Spotify expansion asks for. */
 private const val FLOW_EXPANSION = 8
+
+/** Large Apple recommendation pool, so Flow does not rerun a tiny fixed feed. */
+private const val APPLE_FLOW_POOL_SIZE = 200
+
+private const val HOME_SCOPE_YOUTUBE = "YOUTUBE"
+private const val HOME_SCOPE_SPOTIFY = "SPOTIFY"
+private const val HOME_SCOPE_APPLE = "APPLE"
+
+/**
+ * Whether Flow may open for the selected recommendation algorithm.
+ *
+ * ALL is not unlocked merely because it includes Spotify: it needs at least
+ * one source that actually produced usable evidence. Apple likewise needs an
+ * Apple source answer rather than YouTube's unrelated favourite count.
+ */
+internal fun flowUnlockAllowed(
+    algorithm: RecommendationAlgorithm,
+    favTrackCount: Int,
+    favArtistCount: Int,
+    hasSourceEvidence: Boolean,
+): Boolean = when (algorithm) {
+    RecommendationAlgorithm.SPOTIFY -> true
+    RecommendationAlgorithm.APPLE -> hasSourceEvidence
+    RecommendationAlgorithm.ALL -> hasSourceEvidence
+    RecommendationAlgorithm.YOUTUBE -> FlowRules.isUnlocked(favTrackCount, favArtistCount)
+}
+
+/** Whether a completed Flow build still owns the current queue and algorithm. */
+internal fun flowBuildMayPublish(
+    generation: Long,
+    currentGeneration: Long,
+    algorithm: RecommendationAlgorithm,
+    currentAlgorithm: RecommendationAlgorithm,
+): Boolean = generation == currentGeneration && algorithm == currentAlgorithm
 
 /**
  * Where the Search tab looks.
@@ -273,8 +309,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     private var homeContinuation: String? = null
 
-    /** Titles already on screen, so a later page can't repeat a shelf. */
+    /**
+     * Titles already on screen, so a later page can't repeat a shelf.
+     *
+     * ALL keys each title by its source. Two providers may legitimately both
+     * publish a shelf called "New releases"; one provider's title must not
+     * hide the other provider's row.
+     */
     private val homeSeenTitles = mutableSetOf<String>()
+
+    /** Whether the current recommendation sources produced usable rows. */
+    private val _homeSourceEvidence = MutableStateFlow(false)
 
     private val _homeLoadingMore = MutableStateFlow(false)
 
@@ -2020,10 +2065,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // is separate from the content provider, so changing it must not
             // disturb the library or playback backend; it must only replace
             // the recommendation surfaces.
-            AppSettings.recommendationAlgorithm.drop(1).collect {
+            var previousAlgorithm = AppSettings.recommendationAlgorithm.value
+            AppSettings.recommendationAlgorithm.drop(1).collect { algorithm ->
+                // A Spotify facet belongs to one Spotify page request. Entering
+                // ALL starts with the whole Spotify page again; chips selected
+                // afterwards are requested by ALL and remain usable.
+                if (algorithm == RecommendationAlgorithm.ALL &&
+                    previousAlgorithm != RecommendationAlgorithm.ALL
+                ) {
+                    homeFacet.value = ""
+                    _homeHeader.value = _homeHeader.value?.copy(chip = "")
+                }
+                previousAlgorithm = algorithm
                 FlowStore.clearSnapshot()
+                flowAppleGrowPool.clear()
+                flowAppleGrowSeenIds.clear()
                 loadHome()
-                if (_flowQueue.value is UiState.Success) refreshFlow()
+                // Error and empty are rebuildable states too. Leaving either in
+                // place meant an algorithm change could not recover a Flow
+                // that had failed or had never produced a row.
+                refreshFlow()
             }
         }
         loadHome()
@@ -2467,12 +2528,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _homeShelfTitles.value = emptyList()
         _homeQuickPicksItems.value = emptyList()
         _homeRaw.value = emptyList()
+        _homeSourceEvidence.value = false
         // The header is *kept* while the page reloads. The chips in it are the
         // way back to the whole feed: a page that hid them while it loaded —
         // and again when the load failed — left a listener who had narrowed the
         // page stuck in the narrowed page. Only a change of provider clears
         // it, because only then is it another provider's header.
-        if (AppSettings.recommendationAlgorithm.value != RecommendationAlgorithm.SPOTIFY) {
+        if (AppSettings.recommendationAlgorithm.value != RecommendationAlgorithm.SPOTIFY &&
+            AppSettings.recommendationAlgorithm.value != RecommendationAlgorithm.ALL
+        ) {
             _homeHeader.value = null
         }
         _homeLoadingMore.value = false
@@ -2497,11 +2561,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 loadAppleHome(identity, generation, reportEmpty = true)
             }
             RecommendationAlgorithm.YOUTUBE -> loadYoutubeHome(identity, generation, reportEmpty = true)
-            RecommendationAlgorithm.ALL -> {
-                loadYoutubeHome(identity, generation, reportEmpty = false)
-                loadSpotifyHome(identity, generation, reportEmpty = false)
-                loadAppleHome(identity, generation, reportEmpty = false)
-            }
+            RecommendationAlgorithm.ALL -> loadAllHome(identity, generation)
         }
     }
 
@@ -2599,10 +2659,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 return@launch
             }
-            if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.SPOTIFY) {
+            if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.SPOTIFY ||
+                AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.ALL
+            ) {
                 _homeHeader.value = outcome.header
             }
-            publishHomeShelves(outcome.shelves, identity, generation)
+            val visible = publishHomeShelves(
+                shelves = outcome.shelves,
+                identity = identity,
+                generation = generation,
+                scope = HOME_SCOPE_SPOTIFY,
+            )
+            _homeSourceEvidence.value = visible
+            if (!visible && reportEmpty && _home.value !is UiState.Success) {
+                _home.value = UiState.Error(
+                    outcome.reason ?: "Spotify returned no recommendations",
+                )
+            }
         }
     }
 
@@ -2614,15 +2687,165 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     ) {
         homeContinuation = null
         viewModelScope.launch {
-            val outcome = AppleHomeSource.shelf().getOrNull()
+            val outcome = AppleHomeSource.shelf()
             if (!isCurrentHomeLoad(identity, generation)) return@launch
-            if (outcome == null || outcome.items.isEmpty()) {
+            val shelf = outcome.getOrNull()
+            if (shelf == null || shelf.items.isEmpty()) {
                 if (reportEmpty && _home.value !is UiState.Success) {
-                    _home.value = UiState.Error("Apple Music returned no recommendations")
+                    _home.value = UiState.Error(
+                        outcome.exceptionOrNull()?.message
+                            ?: "Apple Music returned no recommendations",
+                    )
                 }
                 return@launch
             }
-            publishHomeShelves(listOf(outcome), identity, generation)
+            val visible = publishHomeShelves(
+                shelves = listOf(shelf),
+                identity = identity,
+                generation = generation,
+                scope = HOME_SCOPE_APPLE,
+            )
+            _homeSourceEvidence.value = visible
+            if (!visible && reportEmpty && _home.value !is UiState.Success) {
+                _home.value = UiState.Error(
+                    if (AppSettings.appleRichModeEnabled) {
+                        "Apple Music recommendations had no exact Apple catalogue match"
+                    } else {
+                        "Apple Music returned no recommendations"
+                    },
+                )
+            }
+        }
+    }
+
+    /** One provider's staged Home answer. */
+    private data class HomeStage(
+        val scope: String,
+        val label: String,
+        val shelves: List<HomeShelf>,
+        val header: HomeHeader? = null,
+        val reason: String? = null,
+        val continuation: String? = null,
+    )
+
+    /**
+     * Loads every ALL provider before publishing any of them.
+     *
+     * The old fan-out published each provider as it arrived. That made the
+     * page order depend on network timing, let one provider's title suppress
+     * another's, and left a page in Loading forever when every request failed.
+     */
+    private fun loadAllHome(identity: String?, generation: Long) {
+        homeContinuation = null
+        _homePendingShelves.value = 0
+        _homeRecentlyPlayedLoading.value = false
+        viewModelScope.launch {
+            val stages = stageAllHomeSources()
+            if (!isCurrentHomeLoad(identity, generation)) return@launch
+            publishAllHomeStages(stages, identity, generation, replace = true)
+        }
+    }
+
+    /** Reads all three providers concurrently, but retains a fixed publish order. */
+    private suspend fun stageAllHomeSources(): List<HomeStage> = coroutineScope {
+        val youtube = async { stageYoutubeHome() }
+        val spotify = async {
+            val outcome = SpotifyHomeSource.page(homeFacet.value)
+            HomeStage(
+                scope = HOME_SCOPE_SPOTIFY,
+                label = "Spotify",
+                shelves = outcome.shelves,
+                header = outcome.header,
+                reason = outcome.reason,
+            )
+        }
+        val apple = async {
+            val outcome = AppleHomeSource.shelf()
+            HomeStage(
+                scope = HOME_SCOPE_APPLE,
+                label = "Apple Music",
+                shelves = listOfNotNull(outcome.getOrNull()),
+                reason = outcome.exceptionOrNull()?.friendly()
+                    ?: "Apple Music returned no recommendations",
+            )
+        }
+        listOf(youtube.await(), spotify.await(), apple.await())
+    }
+
+    /** The YouTube part of an ALL page, staged without publishing it. */
+    private suspend fun stageYoutubeHome(): HomeStage = coroutineScope {
+        val core = YtMusicRepository.home()
+        val supplements = YtMusicRepository.HOME_SUPPLEMENT_BROWSE_IDS.map { browseId ->
+            async { browseId to YtMusicRepository.homeSupplement(browseId) }
+        }.map { it.await() }
+        val recent = if (_signedIn.value) {
+            async { YtMusicRepository.homeRecentlyPlayed() }.await()
+        } else {
+            null
+        }
+        val feed = core.getOrNull()
+        val shelves = buildList {
+            recent?.getOrNull()?.let(::add)
+            feed?.shelves?.let(::addAll)
+            supplements.forEach { (_, result) -> result.getOrNull()?.let(::addAll) }
+        }
+        val reasons = buildList {
+            core.exceptionOrNull()?.friendly()?.let(::add)
+            supplements.forEach { (_, result) ->
+                result.exceptionOrNull()?.friendly()?.let(::add)
+            }
+        }
+        HomeStage(
+            scope = HOME_SCOPE_YOUTUBE,
+            label = "YouTube Music",
+            shelves = shelves,
+            reason = reasons.firstOrNull(),
+            continuation = feed?.continuation,
+        )
+    }
+
+    /** Publishes staged ALL providers in YouTube, Spotify, Apple order. */
+    private suspend fun publishAllHomeStages(
+        stages: List<HomeStage>,
+        identity: String?,
+        generation: Long,
+        replace: Boolean,
+    ) {
+        // Spotify owns the header even in ALL. Preserve the old one while the
+        // new read is in flight, then replace it when Spotify answers.
+        stages.firstOrNull { it.scope == HOME_SCOPE_SPOTIFY }?.header?.let {
+            _homeHeader.value = it
+        }
+        var visible = false
+        stages.forEachIndexed { index, stage ->
+            if (stage.scope == HOME_SCOPE_YOUTUBE) {
+                homeContinuation = stage.continuation
+            }
+            val added = publishHomeShelves(
+                shelves = stage.shelves,
+                identity = identity,
+                generation = generation,
+                replace = replace && index == 0,
+                scope = stage.scope,
+            )
+            visible = visible || added
+        }
+        _homeSourceEvidence.value = hasTrackEvidence(_homeRaw.value)
+        if (!visible) {
+            val reasons = stages.mapNotNull { stage ->
+                stage.reason?.let { "${stage.label}: $it" }
+            }
+            val detail = if (reasons.isEmpty()) {
+                "No recommendation source returned usable rows"
+            } else {
+                reasons.joinToString("\n\n")
+            }
+            val strict = if (AppSettings.appleRichModeEnabled) {
+                "\n\nNo rows remained after exact Apple catalogue matching."
+            } else {
+                ""
+            }
+            _home.value = UiState.Error(detail + strict)
         }
     }
 
@@ -2653,10 +2876,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     ) {
         val outcome = runCatching { SpotifyHomeSource.page(homeFacet.value) }.getOrNull() ?: return
         if (!isCurrentHomeLoad(identity, generation) || outcome.isEmpty) return
-        if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.SPOTIFY) {
+        if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.SPOTIFY ||
+            AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.ALL
+        ) {
             _homeHeader.value = outcome.header
         }
-        publishHomeShelves(outcome.shelves, identity, generation, replace = replace)
+        publishHomeShelves(
+            shelves = outcome.shelves,
+            identity = identity,
+            generation = generation,
+            replace = replace,
+            scope = HOME_SCOPE_SPOTIFY,
+        )
     }
 
     /** [refreshHome]'s Apple half: the personalised feed read again. */
@@ -2667,7 +2898,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     ) {
         val outcome = AppleHomeSource.shelf().getOrNull() ?: return
         if (!isCurrentHomeLoad(identity, generation) || outcome.items.isEmpty()) return
-        publishHomeShelves(listOf(outcome), identity, generation, replace = replace)
+        publishHomeShelves(
+            shelves = listOf(outcome),
+            identity = identity,
+            generation = generation,
+            replace = replace,
+            scope = HOME_SCOPE_APPLE,
+        )
     }
 
     /**
@@ -2688,7 +2925,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         generation: Long,
         prepend: Boolean = false,
         replace: Boolean = false,
-    ) {
+        scope: String = HOME_SCOPE_YOUTUBE,
+    ): Boolean {
         val visible = enrichHomeShelves(shelves).withoutBlockedArtists()
             .let { loaded ->
                 if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.ALL) {
@@ -2699,30 +2937,80 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
         // Enrichment may wait on bounded Apple lookups. A newer home load can
         // take over meanwhile; the older answer must not append stale shelves.
-        if (!isCurrentHomeLoad(identity, generation)) return
+        if (!isCurrentHomeLoad(identity, generation)) return false
         if (replace) {
-            if (visible.isEmpty()) return
-            homeSeenTitles.clear()
-            homeSeenTitles.addAll(visible.map { it.title.lowercase(Locale.ROOT) })
-            _homeRaw.value = visible
+            if (visible.isEmpty()) return false
+            clearHomeSeenTitles(scope)
+            val added = visible.filter {
+                homeSeenTitles.add(homeTitleKey(scope, it.title))
+            }.let { disambiguateHomeShelfTitles(it, scope) }
+            if (added.isEmpty()) return false
+            _homeRaw.value = added
             publishHome()
-            return
+            return true
         }
         val existing = _homeRaw.value
         if (prepend) {
             // YouTube's core home can also contain a stale "Recently played"
             // shelf. The dedicated history endpoint wins and replaces it.
             val replacing = visible.map { it.title.lowercase(Locale.ROOT) }.toSet()
-            homeSeenTitles.addAll(replacing)
-            _homeRaw.value = visible + existing.filterNot { it.title.lowercase(Locale.ROOT) in replacing }
+            visible.forEach { homeSeenTitles.add(homeTitleKey(scope, it.title)) }
+            val replaced = existing.filterNot { it.title.lowercase(Locale.ROOT) in replacing }
+            val added = disambiguateHomeShelfTitles(visible, scope)
+            _homeRaw.value = added + replaced
             publishHome()
-            return
+            return added.isNotEmpty()
         }
         val added = visible.withoutRepeatsOf(existing)
-            .filter { homeSeenTitles.add(it.title.lowercase(Locale.ROOT)) }
+            .filter { homeSeenTitles.add(homeTitleKey(scope, it.title)) }
+            .let { disambiguateHomeShelfTitles(it, scope) }
         if (added.isNotEmpty()) {
             _homeRaw.value = existing + added
             publishHome()
+        }
+        return added.isNotEmpty()
+    }
+
+    /** Whether the page contains playable rows, not merely browse cards. */
+    private fun hasTrackEvidence(shelves: List<HomeShelf>): Boolean =
+        shelves.any { shelf -> shelf.items.any { !it.videoId.isNullOrBlank() } }
+
+    /** A title key scoped to its provider, so equal titles from two providers differ. */
+    private fun homeTitleKey(scope: String, title: String): String =
+        "$scope\u0000${title.lowercase(Locale.ROOT)}"
+
+    /** Removes one provider's seen titles, leaving the other providers intact. */
+    private fun clearHomeSeenTitles(scope: String) {
+        val prefix = "$scope\u0000"
+        homeSeenTitles.removeAll { it.startsWith(prefix) }
+    }
+
+    /**
+     * Gives colliding ALL titles distinct visible names.
+     *
+     * Shelf order and hidden-shelf settings use titles as keys. Leaving two
+     * providers with the same title makes one key silently control both rows.
+     */
+    private fun disambiguateHomeShelfTitles(
+        shelves: List<HomeShelf>,
+        scope: String,
+    ): List<HomeShelf> {
+        if (AppSettings.recommendationAlgorithm.value != RecommendationAlgorithm.ALL) return shelves
+        val used = _homeRaw.value.mapTo(mutableSetOf()) { it.title.lowercase(Locale.ROOT) }
+        val label = when (scope) {
+            HOME_SCOPE_SPOTIFY -> "Spotify"
+            HOME_SCOPE_APPLE -> "Apple Music"
+            else -> "YouTube Music"
+        }
+        return shelves.map { shelf ->
+            var title = shelf.title
+            var suffix = 2
+            while (title.lowercase(Locale.ROOT) in used) {
+                title = "${shelf.title} ($label${if (suffix == 2) "" else " $suffix"})"
+                suffix++
+            }
+            used += title.lowercase(Locale.ROOT)
+            shelf.copy(title = title)
         }
     }
 
@@ -2905,6 +3193,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             refreshAppleHome(identity, generation)
             return@coroutineScope
         }
+        if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.ALL) {
+            _homeRecentlyPlayedLoading.value = false
+            _homeRaw.value = emptyList()
+            homeSeenTitles.clear()
+            val stages = stageAllHomeSources()
+            if (!isCurrentHomeLoad(identity, generation)) return@coroutineScope
+            publishAllHomeStages(stages, identity, generation, replace = true)
+            return@coroutineScope
+        }
         val recent = if (_signedIn.value) async { YtMusicRepository.homeRecentlyPlayed() } else null
         YtMusicRepository.home().onSuccess { feed ->
             if (!isCurrentHomeLoad(identity, generation)) return@onSuccess
@@ -2924,12 +3221,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
         }?.onFailure {
             if (isCurrentHomeLoad(identity, generation)) _homeRecentlyPlayedLoading.value = false
-        }
-        if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.ALL) {
-            // YouTube's refresh replaced the page above. The other two feeds
-            // append to it and are de-duplicated by publishHomeShelves.
-            refreshSpotifyHome(identity, generation, replace = false)
-            refreshAppleHome(identity, generation, replace = false)
         }
     }
 
@@ -2960,7 +3251,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 if (isCurrentHomeLoad(identity, generation)) {
                     val existing = _homeRaw.value
                     val added = feed.shelves.withoutBlockedArtists().withoutRepeatsOf(existing)
-                        .filter { homeSeenTitles.add(it.title.lowercase(Locale.ROOT)) }
+                        .filter { homeSeenTitles.add(homeTitleKey(HOME_SCOPE_YOUTUBE, it.title)) }
+                        .let { disambiguateHomeShelfTitles(it, HOME_SCOPE_YOUTUBE) }
                     // A page with nothing new signals the feed has looped back on
                     // itself rather than run dry with a token still attached —
                     // treat it the same as exhausted so scrolling can't spin here.
@@ -3092,24 +3384,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             it is SearchResult.TopTrack || it is SearchResult.Track
         }
         if (fromTypeahead is SearchResult.Track) {
-            recordEntity(SearchHistoryEntity(
-                id = fromTypeahead.song.videoId,
-                title = fromTypeahead.song.title,
+            recordEntity(SearchHistoryEntity.fromSong(
+                fromTypeahead.song,
                 subtitle = listOfNotNull(fromTypeahead.song.artist).joinToString(" · "),
-                artworkUrl = fromTypeahead.song.thumbnailUrl,
-                entityType = EntityType.TRACK,
-                appleCatalogId = fromTypeahead.song.appleCatalogId,
             ))
             return
         }
         if (fromTypeahead is SearchResult.TopTrack) {
-            recordEntity(SearchHistoryEntity(
-                id = fromTypeahead.song.videoId,
-                title = fromTypeahead.song.title,
+            recordEntity(SearchHistoryEntity.fromSong(
+                fromTypeahead.song,
                 subtitle = listOfNotNull(fromTypeahead.song.artist).joinToString(" · "),
-                artworkUrl = fromTypeahead.song.thumbnailUrl,
-                entityType = EntityType.TRACK,
-                appleCatalogId = fromTypeahead.song.appleCatalogId,
             ))
             return
         }
@@ -3118,22 +3402,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             it is SearchResult.TopTrack || it is SearchResult.Track
         }
         if (topResult is SearchResult.Track) {
-            recordEntity(SearchHistoryEntity(
-                id = topResult.song.videoId,
-                title = topResult.song.title,
+            recordEntity(SearchHistoryEntity.fromSong(
+                topResult.song,
                 subtitle = listOfNotNull(topResult.song.artist).joinToString(" · "),
-                artworkUrl = topResult.song.thumbnailUrl,
-                entityType = EntityType.TRACK,
-                appleCatalogId = topResult.song.appleCatalogId,
             ))
         } else if (topResult is SearchResult.TopTrack) {
-            recordEntity(SearchHistoryEntity(
-                id = topResult.song.videoId,
-                title = topResult.song.title,
+            recordEntity(SearchHistoryEntity.fromSong(
+                topResult.song,
                 subtitle = listOfNotNull(topResult.song.artist).joinToString(" · "),
-                artworkUrl = topResult.song.thumbnailUrl,
-                entityType = EntityType.TRACK,
-                appleCatalogId = topResult.song.appleCatalogId,
             ))
         } else {
             // Fallback: record as a raw-text entity for backwards compatibility
@@ -5164,19 +5440,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * Unlocks at 16 fav tracks+artists total, or 10 artists alone.
      */
     val flowStatus: StateFlow<FlowStatus> =
-        combine(_library, likeStatuses, AppSettings.recommendationAlgorithm) { library, likes, algorithm ->
+        combine(
+            _library,
+            likeStatuses,
+            AppSettings.recommendationAlgorithm,
+            _homeSourceEvidence,
+        ) { library, likes, algorithm, sourceEvidence ->
             val favTracks = likes.count { it.value == LikeStatus.LIKE }
             val shelves = (library as? UiState.Success)?.data?.shelves.orEmpty()
             val artists = shelves.firstOrNull { it.title.equals("Artists", true) }?.items?.size ?: 0
             val subs = shelves.firstOrNull { it.title.equals("Subscriptions", true) }?.items?.size ?: 0
             val favArtists = maxOf(artists, subs)
-            // Flow is built from the provider that is selected. A listener on
-            // the Spotify catalogue has a whole library over there, and the
-            // YouTube counts this used to read are zero — which is what put
-            // "Like 16 more songs" in front of somebody with thousands.
-            val spotify = algorithm.includes(RecommendationAlgorithm.SPOTIFY)
             FlowStatus(
-                unlocked = spotify || FlowRules.isUnlocked(favTracks, favArtists),
+                unlocked = flowUnlockAllowed(
+                    algorithm = algorithm,
+                    favTrackCount = favTracks,
+                    favArtistCount = favArtists,
+                    hasSourceEvidence = sourceEvidence,
+                ),
                 favTrackCount = favTracks,
                 favArtistCount = favArtists,
             )
@@ -5184,6 +5465,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _flowQueue = MutableStateFlow<UiState<List<Song>>>(UiState.Success(emptyList()))
     val flowQueue: StateFlow<UiState<List<Song>>> = _flowQueue.asStateFlow()
+
+    /** Generation of the newest Flow build; older builds may not publish. */
+    private val flowBuildGeneration = AtomicLong(0L)
+
+    /** The active explicit Flow build, cancelled when a newer build starts. */
+    private var flowBuildJob: Job? = null
+
+    /** Unseen Apple rows reserved for later Flow top-ups. */
+    private var flowAppleGrowPool: MutableList<Song> = mutableListOf()
+    private val flowAppleGrowSeenIds: MutableSet<String> = mutableSetOf()
 
     // Yesterday's mix, restored: Flow opens resumed, never re-rolled, until
     // the snapshot is a day old — at which point the next use rebuilds.
@@ -5196,15 +5487,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * list never interrupts what is playing.
      */
     private fun maybeAutoRefreshFlow() {
-        if (flowAutoRefreshing || _flowSaved.value) return
+        if (flowAutoRefreshing || _flowSaved.value || _flowLoading.value) return
         if ((_flowQueue.value as? UiState.Success)?.data.isNullOrEmpty()) return
         if ((FlowStore.snapshotAgeMs() ?: return) < FlowStore.FLOW_AUTO_REFRESH_MS) return
         flowAutoRefreshing = true
-        viewModelScope.launch {
-            runCatching { buildFlowQueue() }.fold(
-                onSuccess = {
-                    _flowQueue.value = UiState.Success(it)
-                    FlowStore.saveSnapshot(it)
+        val algorithm = AppSettings.recommendationAlgorithm.value
+        val generation = flowBuildGeneration.incrementAndGet()
+        flowBuildJob?.cancel()
+        flowBuildJob = viewModelScope.launch {
+            runCatching { buildFlowQueue(algorithm = algorithm) }.fold(
+                onSuccess = { built ->
+                    if (flowBuildMayPublish(
+                            generation = generation,
+                            currentGeneration = flowBuildGeneration.get(),
+                            algorithm = algorithm,
+                            currentAlgorithm = AppSettings.recommendationAlgorithm.value,
+                        )
+                    ) {
+                        _flowQueue.value = UiState.Success(built)
+                        FlowStore.saveSnapshot(built, algorithm)
+                    }
                 },
                 onFailure = { /* keep current mix; next hour retries */ },
             )
@@ -5253,13 +5555,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * Build the Flow opening queue from library + history + recommendations.
      * Returns tagged Flow tracks ready for playSongs().
      */
-    suspend fun buildFlowQueue(limit: Int = FlowEngine.INITIAL_TRACKS): List<Song> {
+    suspend fun buildFlowQueue(
+        limit: Int = FlowEngine.INITIAL_TRACKS,
+        algorithm: RecommendationAlgorithm = AppSettings.recommendationAlgorithm.value,
+    ): List<Song> {
         // The provider decides the evidence a mix is built from, for the same
         // reason it decides the homepage: a Flow mix is a recommendation, and the
         // service the listener chose is whose taste it should reflect. Nothing
         // else changes — the engine, its weights, the skip and ban learning and
         // the hourly refresh are all the same; only the seed pool is.
-        if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.SPOTIFY) {
+        //
+        // The algorithm is captured once. Reading the setting again halfway
+        // through a build could mix seeds from one algorithm with expansion
+        // from another and then label the result with whichever setting won
+        // the race.
+        if (algorithm == RecommendationAlgorithm.SPOTIFY) {
             val seeds = runCatching { SpotifyHomeSource.flowSeeds() }.getOrNull()
             if (seeds == null || seeds.isEmpty) {
                 // Deliberately *not* falling back to the YouTube seeds.
@@ -5288,8 +5598,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 },
             )
         }
-        if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.APPLE) {
-            val seeds = AppleHomeSource.tracks(FLOW_EXPANSION * 2).getOrNull().orEmpty()
+        if (algorithm == RecommendationAlgorithm.APPLE) {
+            val pool = AppleHomeSource.tracks(APPLE_FLOW_POOL_SIZE).getOrNull().orEmpty()
+                .distinctBy { it.videoId }
+            if (pool.isEmpty()) return emptyList()
+            val offered = mutableSetOf<String>()
+            fun takeUnseen(count: Int): List<Song> = buildList {
+                for (song in pool) {
+                    if (!offered.add(song.videoId)) continue
+                    add(song)
+                    if (size == count) break
+                }
+            }
+            val seeds = takeUnseen(limit * 2)
             if (seeds.isEmpty()) return emptyList()
             return flowQueueFrom(
                 FlowEngine.SeedPool(
@@ -5299,8 +5620,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     moodPool = emptyList(),
                 ),
                 limit,
-                relatedTracks = {
-                    AppleHomeSource.tracks(FLOW_EXPANSION).getOrNull().orEmpty()
+                relatedTracks = { seed ->
+                    offered.add(seed.videoId)
+                    takeUnseen(FLOW_EXPANSION * 2)
                 },
             )
         }
@@ -5318,9 +5640,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // songs the mood is made of. The unfiltered mix has no station and
         // asks for none.
         val moodPool = fetchFlowMoodPool(FlowStore.config.mood)
-        if (AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.ALL) {
+        if (algorithm == RecommendationAlgorithm.ALL) {
             val spotifySeeds = runCatching { SpotifyHomeSource.flowSeeds() }.getOrNull()
-            val appleSeeds = AppleHomeSource.tracks(FLOW_EXPANSION * 2).getOrNull().orEmpty()
+            val applePool = AppleHomeSource.tracks(APPLE_FLOW_POOL_SIZE).getOrNull().orEmpty()
+                .distinctBy { it.videoId }
+            val offeredAppleIds = mutableSetOf<String>()
+            fun takeUnseenApple(count: Int): List<Song> = buildList {
+                for (song in applePool) {
+                    if (!offeredAppleIds.add(song.videoId)) continue
+                    add(song)
+                    if (size == count) break
+                }
+            }
+            val appleSeeds = takeUnseenApple(FLOW_EXPANSION * 3)
             val allFavorites = interleaveRecommendationGroups(
                 listOf(favorites, spotifySeeds?.top.orEmpty(), appleSeeds),
                 FLOW_EXPANSION * 2,
@@ -5333,11 +5665,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 FlowEngine.SeedPool(allFavorites, allHistory, quickPicks, moodPool),
                 limit,
                 relatedTracks = { seed ->
-                    val youtube = YtMusicRepository.radio(seed.videoId).getOrNull().orEmpty()
+                    val youtube = youtubeFlowRadio(seed)
                     val spotify = runCatching {
                         com.music.bitchord.data.spotify.SpotifyAlgorithm.more(seed, FLOW_EXPANSION)
                     }.getOrDefault(emptyList())
-                    val apple = AppleHomeSource.tracks(FLOW_EXPANSION).getOrNull().orEmpty()
+                    val apple = takeUnseenApple(FLOW_EXPANSION)
                     interleaveRecommendationGroups(
                         listOf(youtube, spotify, apple),
                         FLOW_EXPANSION,
@@ -5348,7 +5680,43 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return flowQueueFrom(
             FlowEngine.SeedPool(favorites, history, quickPicks, moodPool),
             limit,
+            relatedTracks = ::youtubeFlowRadio,
         )
+    }
+
+    /** YouTube radio for a seed, resolving source-backed ids first. */
+    private suspend fun youtubeFlowRadio(seed: Song): List<Song> {
+        val youtubeSeed = youtubeSeedFor(seed) ?: return emptyList()
+        return YtMusicRepository.radio(youtubeSeed).getOrNull().orEmpty()
+    }
+
+    /**
+     * Takes unseen Apple rows for a Flow top-up.
+     *
+     * The feed is requested in a large pool, not eight rows at a time. The
+     * old fixed request returned the same head of the feed on every top-up,
+     * so Flow quickly exhausted it and began adding the same tracks again.
+     */
+    private suspend fun nextAppleFlowTracks(
+        excludedIds: Set<String>,
+        count: Int,
+    ): List<Song> {
+        if (count <= 0) return emptyList()
+        flowAppleGrowPool.removeAll { it.videoId in excludedIds || it.videoId in flowAppleGrowSeenIds }
+        if (flowAppleGrowPool.size < count) {
+            val fresh = AppleHomeSource.tracks(APPLE_FLOW_POOL_SIZE).getOrNull().orEmpty()
+                .distinctBy { it.videoId }
+                .filterNot { it.videoId in excludedIds || it.videoId in flowAppleGrowSeenIds }
+            val known = flowAppleGrowPool.mapTo(mutableSetOf()) { it.videoId }
+            flowAppleGrowPool += fresh.filter { known.add(it.videoId) }
+        }
+        val out = mutableListOf<Song>()
+        while (out.size < count && flowAppleGrowPool.isNotEmpty()) {
+            val song = flowAppleGrowPool.removeAt(0)
+            if (song.videoId in excludedIds || !flowAppleGrowSeenIds.add(song.videoId)) continue
+            out += song
+        }
+        return out
     }
 
     /** Merges recommendation feeds in turns, so every feed contributes. */
@@ -5391,8 +5759,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         ).withoutBlockedArtists().distinctBy { it.videoId }.take(limit)
         val enriched = AppleEnrichment.enrich(built)
         return if (AppSettings.appleRichModeEnabled) {
-            enriched.filter { !it.appleCatalogId.isNullOrBlank() }
-                .distinctBy { it.appleCatalogId }
+            retainExactAppleRows(enriched)
         } else {
             enriched
         }
@@ -5439,18 +5806,58 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun refreshFlow(limit: Int = FlowEngine.INITIAL_TRACKS) {
-        if (_flowLoading.value) return
-        viewModelScope.launch {
+        launchFlowBuild(limit, resetSaved = false)
+    }
+
+    /**
+     * Starts a Flow build that owns publication until a newer build replaces it.
+     *
+     * Starting a build cancels the previous one and advances the generation.
+     * Cancellation alone is not enough: a cancelled provider can still return
+     * a value, so publication also checks the generation and the captured
+     * algorithm.
+     */
+    private fun launchFlowBuild(
+        limit: Int,
+        resetSaved: Boolean,
+    ) {
+        val algorithm = AppSettings.recommendationAlgorithm.value
+        val generation = flowBuildGeneration.incrementAndGet()
+        if (resetSaved) {
+            flowAppleGrowPool.clear()
+            flowAppleGrowSeenIds.clear()
+        }
+        flowBuildJob?.cancel()
+        flowBuildJob = viewModelScope.launch {
             _flowLoading.value = true
             _flowQueue.value = UiState.Loading
-            runCatching { buildFlowQueue(limit) }.fold(
-                onSuccess = {
-                    _flowQueue.value = UiState.Success(it)
-                    FlowStore.saveSnapshot(it)
-                },
-                onFailure = { _flowQueue.value = UiState.Error(it.friendly()) },
-            )
-            _flowLoading.value = false
+            try {
+                val built = buildFlowQueue(limit, algorithm)
+                if (!flowBuildMayPublish(
+                        generation = generation,
+                        currentGeneration = flowBuildGeneration.get(),
+                        algorithm = algorithm,
+                        currentAlgorithm = AppSettings.recommendationAlgorithm.value,
+                    )
+                ) {
+                    return@launch
+                }
+                _flowQueue.value = UiState.Success(built)
+                if (resetSaved) _flowSaved.value = false
+                FlowStore.saveSnapshot(built, algorithm)
+            } catch (failure: Throwable) {
+                if (flowBuildMayPublish(
+                        generation = generation,
+                        currentGeneration = flowBuildGeneration.get(),
+                        algorithm = algorithm,
+                        currentAlgorithm = AppSettings.recommendationAlgorithm.value,
+                    )
+                ) {
+                    _flowQueue.value = UiState.Error(failure.friendly())
+                }
+            } finally {
+                if (generation == flowBuildGeneration.get()) _flowLoading.value = false
+            }
         }
     }
 
@@ -5500,29 +5907,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     suspend fun ensureFlowTracks(limit: Int = FlowEngine.INITIAL_TRACKS): List<Song> {
         ((_flowQueue.value as? UiState.Success)?.data?.takeIf { it.isNotEmpty() })?.let { return it }
-        val built = buildFlowQueue(limit)
-        _flowQueue.value = UiState.Success(built)
-        _flowSaved.value = false
-        FlowStore.saveSnapshot(built)
-        return built
+        val algorithm = AppSettings.recommendationAlgorithm.value
+        val generation = flowBuildGeneration.incrementAndGet()
+        flowBuildJob?.cancel()
+        _flowLoading.value = true
+        try {
+            val built = buildFlowQueue(limit, algorithm)
+            if (!flowBuildMayPublish(
+                    generation = generation,
+                    currentGeneration = flowBuildGeneration.get(),
+                    algorithm = algorithm,
+                    currentAlgorithm = AppSettings.recommendationAlgorithm.value,
+                )
+            ) {
+                return emptyList()
+            }
+            _flowQueue.value = UiState.Success(built)
+            _flowSaved.value = false
+            FlowStore.saveSnapshot(built, algorithm)
+            return built
+        } finally {
+            if (generation == flowBuildGeneration.get()) _flowLoading.value = false
+        }
     }
 
     /** Explicit new mix: the only path that throws the session away. */
     fun newFlowMix(limit: Int = FlowEngine.INITIAL_TRACKS) {
-        if (_flowLoading.value) return
-        viewModelScope.launch {
-            _flowLoading.value = true
-            _flowQueue.value = UiState.Loading
-            runCatching { buildFlowQueue(limit) }.fold(
-                onSuccess = {
-                    _flowQueue.value = UiState.Success(it)
-                    _flowSaved.value = false
-                    FlowStore.saveSnapshot(it)
-                },
-                onFailure = { _flowQueue.value = UiState.Error(it.friendly()) },
-            )
-            _flowLoading.value = false
-        }
+        launchFlowBuild(limit, resetSaved = true)
     }
 
     /**
@@ -5537,31 +5948,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             refreshFlow()
             return
         }
-        viewModelScope.launch {
+        val algorithm = AppSettings.recommendationAlgorithm.value
+        val generation = flowBuildGeneration.incrementAndGet()
+        flowBuildJob?.cancel()
+        flowBuildJob = viewModelScope.launch {
             _flowLoading.value = true
-            runCatching {
+            try {
                 val tail = current.takeLast(3)
                 val out = current.toMutableList()
                 for (seed in tail) {
                     if (out.size >= current.size + limit) break
                     // The top-up is the provider's algorithm as well: a mix
                     // that starts as Spotify's and grows through YouTube's
-                    // radio is half Spotify and half YouTube.
-                    val algorithm = AppSettings.recommendationAlgorithm.value
+                    // radio is half Spotify and half YouTube. The algorithm is
+                    // captured once for the whole top-up.
                     val related = when (algorithm) {
                         RecommendationAlgorithm.SPOTIFY -> runCatching {
                             com.music.bitchord.data.spotify.SpotifyAlgorithm.more(seed, FLOW_EXPANSION)
                         }.getOrDefault(emptyList())
                         RecommendationAlgorithm.APPLE ->
-                            AppleHomeSource.tracks(FLOW_EXPANSION).getOrNull().orEmpty()
-                        RecommendationAlgorithm.YOUTUBE ->
-                            YtMusicRepository.radio(seed.videoId).getOrNull().orEmpty()
+                            nextAppleFlowTracks(out.mapTo(mutableSetOf()) { it.videoId }, FLOW_EXPANSION * 2)
+                        RecommendationAlgorithm.YOUTUBE -> youtubeFlowRadio(seed)
                         RecommendationAlgorithm.ALL -> {
-                            val youtube = YtMusicRepository.radio(seed.videoId).getOrNull().orEmpty()
+                            val youtube = youtubeFlowRadio(seed)
                             val spotify = runCatching {
                                 com.music.bitchord.data.spotify.SpotifyAlgorithm.more(seed, FLOW_EXPANSION)
                             }.getOrDefault(emptyList())
-                            val apple = AppleHomeSource.tracks(FLOW_EXPANSION).getOrNull().orEmpty()
+                            val apple = nextAppleFlowTracks(
+                                out.mapTo(mutableSetOf()) { it.videoId },
+                                FLOW_EXPANSION * 2,
+                            )
                             interleaveRecommendationGroups(
                                 listOf(youtube, spotify, apple),
                                 FLOW_EXPANSION,
@@ -5577,9 +5993,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                             )
                         }
                     val strictRelated = if (AppSettings.appleRichModeEnabled) {
-                        AppleEnrichment.enrich(eligible)
-                            .filter { !it.appleCatalogId.isNullOrBlank() }
-                            .distinctBy { it.appleCatalogId }
+                        retainExactAppleRows(AppleEnrichment.enrich(eligible))
                     } else {
                         eligible
                     }
@@ -5587,15 +6001,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     out += FlowEngine.tagFlow(extra).filter { c -> out.none { it.videoId == c.videoId } }
                     FlowStore.advanceSeedCursor()
                 }
-                out.distinctBy { it.videoId }
-            }.fold(
-                onSuccess = {
-                    _flowQueue.value = UiState.Success(it)
-                    FlowStore.saveSnapshot(it)
-                },
-                onFailure = { /* keep current list; growing is best-effort */ },
-            )
-            _flowLoading.value = false
+                val grown = out.distinctBy { it.videoId }
+                if (!flowBuildMayPublish(
+                        generation = generation,
+                        currentGeneration = flowBuildGeneration.get(),
+                        algorithm = algorithm,
+                        currentAlgorithm = AppSettings.recommendationAlgorithm.value,
+                    )
+                ) {
+                    return@launch
+                }
+                _flowQueue.value = UiState.Success(grown)
+                FlowStore.saveSnapshot(grown, algorithm)
+            } catch (_: Throwable) {
+                // Keep the current list; growing is best-effort.
+            } finally {
+                if (generation == flowBuildGeneration.get()) _flowLoading.value = false
+            }
         }
     }
 

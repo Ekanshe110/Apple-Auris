@@ -32,8 +32,31 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
-import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * Convert a discovery card into the playable song it describes.
+ *
+ * Every card-to-song conversion in this repository goes through here so
+ * catalogue metadata cannot disappear depending on which feed supplied the
+ * row. In particular, unknown explicit state stays unknown; it is never
+ * flattened to clean.
+ */
+internal fun ShelfItem.toSongOrNull(): Song? {
+    val id = videoId?.takeIf { it.isNotBlank() } ?: return null
+    return Song(
+        videoId = id,
+        title = title,
+        artist = InnertubeParser.artistFromSubtitle(subtitle),
+        thumbnailUrl = thumbnailUrl,
+        durationText = durationText,
+        isExplicit = isExplicit,
+        contentRating = contentRating,
+        isrc = isrc,
+        appleCatalogId = appleCatalogId,
+        appleLookupError = appleLookupError,
+    )
+}
 
 /** Suspend API over Innertube. Every call returns a Result so the UI can show a real error. */
 object YtMusicRepository {
@@ -184,14 +207,7 @@ object YtMusicRepository {
                 it.title.contains("recommend", ignoreCase = true)
         }
         val qpSongs = qpShelf?.items?.mapNotNull { item ->
-            item.videoId?.takeUnless { it in excludeSongIds }?.let { vid ->
-                Song(
-                    videoId = vid,
-                    title = item.title,
-                    artist = InnertubeParser.artistFromSubtitle(item.subtitle),
-                    thumbnailUrl = item.thumbnailUrl,
-                )
-            }
+            item.toSongOrNull()?.takeUnless { it.videoId in excludeSongIds }
         }.orEmpty()
         if (qpSongs.isNotEmpty()) return@call qpSongs
 
@@ -206,14 +222,7 @@ object YtMusicRepository {
 
         val homeShelfSongs = candidateShelves.flatMap { shelf ->
             shelf.items.mapNotNull { item ->
-                item.videoId?.takeUnless { it in excludeSongIds }?.let { vid ->
-                    Song(
-                        videoId = vid,
-                        title = item.title,
-                        artist = InnertubeParser.artistFromSubtitle(item.subtitle),
-                        thumbnailUrl = item.thumbnailUrl,
-                    )
-                }
+                item.toSongOrNull()?.takeUnless { it.videoId in excludeSongIds }
             }
         }.distinctBy { it.videoId }
 
@@ -222,14 +231,7 @@ object YtMusicRepository {
         // 3. Any shelf items on Home that have videoId
         val allHomeTrackSongs = shelves.flatMap { shelf ->
             shelf.items.mapNotNull { item ->
-                item.videoId?.let { vid ->
-                    Song(
-                        videoId = vid,
-                        title = item.title,
-                        artist = InnertubeParser.artistFromSubtitle(item.subtitle),
-                        thumbnailUrl = item.thumbnailUrl,
-                    )
-                }
+                item.toSongOrNull()
             }
         }.distinctBy { it.videoId }
 
@@ -240,14 +242,7 @@ object YtMusicRepository {
         val explore = runCatching { shelvesOf("FEmusic_new_releases") }.getOrDefault(emptyList())
         val exploreSongs = explore.flatMap { shelf ->
             shelf.items.mapNotNull { item ->
-                item.videoId?.takeUnless { it in excludeSongIds }?.let { vid ->
-                    Song(
-                        videoId = vid,
-                        title = item.title,
-                        artist = InnertubeParser.artistFromSubtitle(item.subtitle),
-                        thumbnailUrl = item.thumbnailUrl,
-                    )
-                }
+                item.toSongOrNull()?.takeUnless { it.videoId in excludeSongIds }
             }
         }.distinctBy { it.videoId }
 

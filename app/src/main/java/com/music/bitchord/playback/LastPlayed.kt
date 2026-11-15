@@ -130,7 +130,7 @@ object LastPlayed {
     }
 
     @Serializable
-    private data class StoredTrack(
+    internal data class StoredTrack(
         val id: String,
         val title: String,
         val artist: String,
@@ -143,6 +143,8 @@ object LastPlayed {
         val duration: String? = null,
         val album: String? = null,
         val explicit: Boolean? = null,
+        val contentRating: String? = null,
+        val isrc: String? = null,
         val video: Boolean = false,
         val radio: String? = null,
         val source: String? = null,
@@ -166,6 +168,8 @@ object LastPlayed {
                 durationText = duration,
                 albumName = album,
                 isExplicit = explicit,
+                contentRating = contentRating,
+                isrc = isrc,
                 isVideo = video,
                 queueTier = resolvedTier,
                 queueEntryId = entryId,
@@ -196,6 +200,8 @@ object LastPlayed {
                 duration = song.durationText,
                 album = song.albumName,
                 explicit = song.isExplicit,
+                contentRating = song.contentRating,
+                isrc = song.isrc,
                 video = song.isVideo,
                 radio = song.radioName,
                 source = song.playbackSource,

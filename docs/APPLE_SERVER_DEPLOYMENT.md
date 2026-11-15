@@ -124,6 +124,13 @@ absent from Apple's catalogue response stays `null`; it is never guessed to
 be clean. The route is recommendation-only and does not change the Apple
 playback backend.
 
+## Physical-device acceptance
+
+Live server checks and hosted CI do not prove Android playback, uncensored
+lyrics, navigation, queue restoration, or latency. Complete
+[`APPLE_PHYSICAL_DEVICE_ACCEPTANCE.md`](APPLE_PHYSICAL_DEVICE_ACCEPTANCE.md)
+on a physical device before declaring the candidate successful.
+
 Track routes use the collection id returned by the collection response:
 
 ```text

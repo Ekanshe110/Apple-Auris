@@ -787,7 +787,7 @@ internal fun AccountStep(
         Spacer(Modifier.height(22.dp))
         OnbSectionLabel("Preferred catalogue")
         Text(
-            text = "Home, Flow and Autoplay are built from this one. Search always looks in both.",
+            text = "This chooses your catalogue, library, and playback routing. Choose the recommendation algorithm later in Settings.",
             color = Onb.Subtitle,
             fontSize = 12.sp,
             lineHeight = 16.sp,

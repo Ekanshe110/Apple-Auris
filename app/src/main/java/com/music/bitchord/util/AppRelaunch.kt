@@ -9,12 +9,10 @@ import android.os.SystemClock
 /**
  * Restarts the app, for the settings whose change cannot be half-applied.
  *
- * Used by the content-provider switch. Flow and Autoplay each keep learning
- * state — skips, bans, an hourly snapshot, a ranking model — and every part of it
- * was trained against whichever provider built it. Switching the provider inside
- * a live process means deciding, per cache and per model, whether it still
- * describes the feed it came from; the honest answer is "no" for all of them, and
- * the cheapest way to be sure of that is to start over.
+ * Used by the content-source switch. Changing that source moves catalogues,
+ * libraries, and source-backed playback identity together. Applying half of
+ * that inside a live process leaves the UI and the player naming different
+ * catalogues, so the cheapest honest answer is to start over.
  *
  * ## Why an alarm and not a direct launch
  *
