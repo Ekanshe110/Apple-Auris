@@ -3815,18 +3815,6 @@ class PlaybackService : MediaLibraryService() {
      * replaced by a new one appended after the ones still waiting instead of
      * everything arriving in one burst at the end of the queue.
      */
-    /**
-     * Re-arm AutoPlay for the current track even if it was already considered.
-     *
-     * Called when the listener taps an AutoPlay row, because the row becoming
-     * current must immediately refill the tail rather than waiting for the next
-     * track change.
-     */
-    internal fun ensureAutoplayQueue() {
-        autoplaySeed = null
-        loadAutoplayForCurrentTrack()
-    }
-
     private fun loadAutoplayForCurrentTrack() {
         val exoPlayer = player ?: return
         val party = ListenTogether.state.value

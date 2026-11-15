@@ -39,9 +39,6 @@ object AppleLikedStore {
     /** Whether this exact Apple row is currently liked. */
     fun isLiked(videoId: String): Boolean = _items.value.any { it.id == videoId }
 
-    /** The persisted rows as the songs the app's library and rating state use. */
-    internal fun songs(): List<Song> = _items.value.mapNotNull { it.toLikedSong() }
-
     /**
      * The library page with Apple's local likes merged into its Liked Music rows.
      *
