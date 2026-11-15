@@ -2,6 +2,7 @@ package com.music.bitchord.data.apple
 
 import com.music.bitchord.data.sources.SourceConfig
 import com.music.bitchord.data.sources.addon.AddonLibraryItem
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -11,6 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -22,13 +24,16 @@ import java.util.concurrent.ConcurrentHashMap
  */
 internal data class AppleLibraryScopeKey(
     val configId: String,
+    val baseUrl: String,
+    /** Hash of the credential-bearing settings; never the credential itself. */
+    val accountFingerprint: String,
     val collection: AppleLibraryCollection,
     /** The library id of the opened playlist/album, or null for the root. */
     val collectionId: String?,
 ) {
-    /** Stable across process death, and distinct per collection and detail. */
+    /** Stable across process death, and distinct per account, collection and detail. */
     val cacheKey: String
-        get() = "$configId|${collection.routeName}|${collectionId.orEmpty()}"
+        get() = "$configId|$accountFingerprint|${collection.routeName}|${collectionId.orEmpty()}"
 }
 
 /**
@@ -63,7 +68,11 @@ internal data class AppleLibraryScopeState(
  * Everything the listener has already loaded stays here for the session: the
  * pages are appended, never replaced, and a refresh never blanks the list.
  */
-internal class AppleLibraryScope(val key: AppleLibraryScopeKey) {
+internal class AppleLibraryScope(
+    val key: AppleLibraryScopeKey,
+    dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val loader: (suspend (SourceConfig, Int) -> AppleLibraryState)? = null,
+) {
 
     private val firstMutex = Mutex()
     private val moreMutex = Mutex()
@@ -73,7 +82,7 @@ internal class AppleLibraryScope(val key: AppleLibraryScopeKey) {
     val state: StateFlow<AppleLibraryScopeState> = _state.asStateFlow()
 
     private val job = SupervisorJob()
-    private val scope = CoroutineScope(job + Dispatchers.Main.immediate)
+    private val scope = CoroutineScope(job + dispatcher)
 
     init {
         if (key.collection == AppleLibraryCollection.LIKED) {
@@ -101,6 +110,15 @@ internal class AppleLibraryScope(val key: AppleLibraryScopeKey) {
     /** The page fetched ahead of the listener's next scroll. */
     private var prefetchedOffset: Int? = null
     private var prefetchedPage: AppleLibraryState.Ready? = null
+
+    /**
+     * Number of rows owned by page one.
+     *
+     * A background refresh replaces that prefix but must not throw away the
+     * pages already appended after it. Keeping the boundary lets a re-entry
+     * patch page one without losing pages two and three.
+     */
+    private var firstPageBoundary: Int = 0
 
     /**
      * Shows the listing.
@@ -190,6 +208,7 @@ internal class AppleLibraryScope(val key: AppleLibraryScopeKey) {
     }
 
     private suspend fun fetch(config: SourceConfig, offset: Int): AppleLibraryState {
+        loader?.let { return it(config, offset) }
         if (key.collection == AppleLibraryCollection.LIKED) {
             return AppleLibraryState.Ready(
                 items = AppleLikedStore.items.value,
@@ -211,10 +230,16 @@ internal class AppleLibraryScope(val key: AppleLibraryScopeKey) {
         loaded = true
         when (page) {
             is AppleLibraryState.Ready -> {
+                // Refresh page one in place, but keep every page already
+                // appended after it. The cursor also belongs to that loaded
+                // tail: resetting it to page one's next offset would make the
+                // next tap fetch page two a second time.
+                val tail = if (keepRows) current.items.drop(firstPageBoundary) else emptyList()
+                val keepCursor = keepRows && current.nextOffset != null
                 _state.value = current.copy(
-                    items = page.items,
-                    hasMore = page.hasMore,
-                    nextOffset = page.nextOffset,
+                    items = page.items + tail,
+                    hasMore = if (keepCursor) current.hasMore else page.hasMore,
+                    nextOffset = if (keepCursor) current.nextOffset else page.nextOffset,
                     loading = false,
                     refreshing = false,
                     failure = null,
@@ -223,6 +248,7 @@ internal class AppleLibraryScope(val key: AppleLibraryScopeKey) {
                     unconfigured = false,
                     empty = false,
                 )
+                firstPageBoundary = page.items.size
             }
             AppleLibraryState.Empty -> {
                 _state.value = current.copy(
@@ -242,7 +268,7 @@ internal class AppleLibraryScope(val key: AppleLibraryScopeKey) {
                     refreshing = false,
                     // A refresh that failed keeps the rows and says nothing
                     // about them. Only a first page with no rows is an error.
-                    failure = if (keepRows) null else page.message,
+                    failure = if (keepRows && current.items.isNotEmpty()) null else page.message,
                 )
             }
             AppleLibraryState.SignedOut -> {
@@ -268,6 +294,25 @@ internal class AppleLibraryScope(val key: AppleLibraryScopeKey) {
 }
 
 /**
+ * Account identity for a configured Apple source.
+ *
+ * The source id survives an account switch, so it cannot be the cache boundary
+ * on its own. Hashing the sorted settings separates linked accounts while
+ * keeping the credential itself out of keys, logs and crash reports.
+ */
+internal fun SourceConfig.libraryAccountFingerprint(): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    digest.update(baseUrl.toByteArray(Charsets.UTF_8))
+    settings.toSortedMap().forEach { (name, value) ->
+        digest.update(0)
+        digest.update(name.toByteArray(Charsets.UTF_8))
+        digest.update(0)
+        digest.update(value.toByteArray(Charsets.UTF_8))
+    }
+    return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
+}
+
+/**
  * The session cache for Apple library pages.
  *
  * The repository lives here too: it owns the addon client, and the client's
@@ -290,9 +335,19 @@ object AppleLibraryStore {
         config: SourceConfig,
         collection: AppleLibraryCollection,
         collectionId: String?,
+        dispatcher: CoroutineDispatcher = Dispatchers.Default,
+        loader: (suspend (SourceConfig, Int) -> AppleLibraryState)? = null,
     ): AppleLibraryScope {
-        val key = AppleLibraryScopeKey(config.id, collection, collectionId)
-        return scopes.getOrPut(key.cacheKey) { AppleLibraryScope(key) }
+        val key = AppleLibraryScopeKey(
+            configId = config.id,
+            baseUrl = config.baseUrl,
+            accountFingerprint = config.libraryAccountFingerprint(),
+            collection = collection,
+            collectionId = collectionId,
+        )
+        return scopes.getOrPut(key.cacheKey) {
+            AppleLibraryScope(key, dispatcher = dispatcher, loader = loader)
+        }
     }
 
     /** Forgets every cached listing. Used by tests. */
@@ -303,36 +358,32 @@ object AppleLibraryStore {
     }
 }
 
-/**
- * Appends a page to the rows already on screen.
- *
- * The same library row can appear twice in one listing — a playlist can hold
- * the same song twice — so rows are kept by their own id and a repeat does
- * not become a second line in the list.
- */
-/** Stable key for a library row; falls back to title+artist when id is blank. */
+/** Stable identity for a library row; falls back to title+artist when id is blank. */
 internal fun AddonLibraryItem.rowKey(): String =
     id.takeIf { it.isNotBlank() }
         ?: catalogId.takeIf { it.isNotBlank() }
         ?: "${title}\u0000${artist}"
 
 /**
+ * Identity for one occurrence of a row in a listing.
+ *
+ * A playlist may legitimately contain the same recording twice. The row id
+ * identifies the recording, while this key identifies its occurrence, so lazy
+ * lists can keep both without colliding.
+ */
+internal fun occurrenceKey(items: List<AddonLibraryItem>, index: Int): String {
+    val base = items[index].rowKey()
+    val occurrence = items.take(index).count { it.rowKey() == base }
+    return "$base#$occurrence"
+}
+
+/**
  * Appends a page to the rows already on screen.
  *
- * The same library row can appear twice in one listing — a playlist can hold
- * the same song twice — so rows are kept by their own id and a repeat does
- * not become a second line in the list.
+ * Repeated recordings are not deduplicated: two entries in one playlist are
+ * two real rows and both must remain playable.
  */
 internal fun appendItems(
     existing: List<AddonLibraryItem>,
     incoming: List<AddonLibraryItem>,
-): List<AddonLibraryItem> {
-    val seen = existing.mapTo(HashSet()) { it.rowKey() }
-    return buildList {
-        addAll(existing)
-        for (item in incoming) {
-            if (!seen.add(item.rowKey())) continue
-            add(item)
-        }
-    }
-}
+): List<AddonLibraryItem> = existing + incoming

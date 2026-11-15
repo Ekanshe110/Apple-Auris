@@ -1395,6 +1395,8 @@
     <string name="add_to_folder">Add to folder</string>
     <string name="remove_from_folder">Remove from folder</string>
     <string name="add_to_apple_playlist">Add to Apple Music playlist</string>
+    <string name="apple_music">Apple Music</string>
+    <string name="local_folders">Local folders</string>
     <string name="no_apple_playlists">No Apple Music playlists found.</string>
     <string name="unknown_playlist">Unknown playlist</string>
     <string name="track_added_to_apple_playlist">Added to %1$s</string>

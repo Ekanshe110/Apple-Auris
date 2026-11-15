@@ -25,11 +25,13 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,6 +51,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.LaunchedEffect
 import com.music.bitchord.R
+import com.music.bitchord.data.model.UiState
+import com.music.bitchord.data.sources.addon.AddonLibraryItem
 import com.music.bitchord.data.spotify.LocalPlaylist
 import com.music.bitchord.ui.icons.BitChordIcons
 import java.util.Locale
@@ -71,9 +75,13 @@ fun FolderPickerSheet(
     onCreate: (String) -> Unit,
     modifier: Modifier = Modifier,
     startCreating: Boolean = false,
+    applePlaylists: UiState<List<AddonLibraryItem>>? = null,
+    onAddToApple: (List<AddonLibraryItem>) -> Unit = {},
 ) {
     var creating by remember { mutableStateOf(startCreating) }
+    var destination by remember { mutableStateOf(FolderPickerDestination.LOCAL) }
     var selected by remember { mutableStateOf(emptySet<String>()) }
+    var selectedApple by remember { mutableStateOf(emptySet<String>()) }
 
     if (creating) {
         NewFolderForm(
@@ -86,48 +94,140 @@ fun FolderPickerSheet(
 
     Column(modifier.fillMaxWidth()) {
         SheetHeading(stringResource(R.string.add_to_folder).uppercase(Locale.getDefault()))
-        ActionRow(
-            icon = BitChordIcons.Plus,
-            label = stringResource(R.string.new_folder),
-            onClick = { creating = true },
-        )
-        HorizontalDivider(
-            modifier = Modifier.padding(vertical = 6.dp),
-            thickness = 0.5.dp,
-            color = MaterialTheme.colorScheme.outline,
-        )
-        if (folders.isEmpty()) {
-            Text(
-                text = stringResource(R.string.no_folders_yet),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 22.dp, vertical = 18.dp),
-            )
-        } else {
-            LazyColumn(Modifier.heightIn(max = 320.dp)) {
-                items(folders, key = { it.id }) { folder ->
-                    val ticked = folder.id in selected
-                    FolderRow(
-                        folder = folder,
-                        selected = ticked,
-                        onClick = {
-                            selected = if (ticked) selected - folder.id else selected + folder.id
-                        },
-                    )
+
+        if (applePlaylists != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+            ) {
+                TextButton(
+                    onClick = { destination = FolderPickerDestination.LOCAL },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(stringResource(R.string.local_folders))
+                }
+                TextButton(
+                    onClick = { destination = FolderPickerDestination.APPLE },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(stringResource(R.string.apple_music))
                 }
             }
-            Spacer(Modifier.height(12.dp))
-            Button(
-                onClick = { onAdd(folders.filter { it.id in selected }) },
-                enabled = selected.isNotEmpty(),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 22.dp),
-            ) {
-                Text(stringResource(R.string.add_to_folder))
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 6.dp),
+                thickness = 0.5.dp,
+                color = MaterialTheme.colorScheme.outline,
+            )
+        }
+
+        if (destination == FolderPickerDestination.APPLE && applePlaylists != null) {
+            AppleFolderDestination(
+                playlists = applePlaylists,
+                selected = selectedApple,
+                onToggle = { id ->
+                    selectedApple = if (id in selectedApple) selectedApple - id else selectedApple + id
+                },
+                onAdd = { picked -> onAddToApple(picked) },
+            )
+        } else {
+            ActionRow(
+                icon = BitChordIcons.Plus,
+                label = stringResource(R.string.new_folder),
+                onClick = { creating = true },
+            )
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 6.dp),
+                thickness = 0.5.dp,
+                color = MaterialTheme.colorScheme.outline,
+            )
+            if (folders.isEmpty()) {
+                Text(
+                    text = stringResource(R.string.no_folders_yet),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 22.dp, vertical = 18.dp),
+                )
+            } else {
+                LazyColumn(Modifier.heightIn(max = 320.dp)) {
+                    items(folders, key = { it.id }) { folder ->
+                        val ticked = folder.id in selected
+                        FolderRow(
+                            folder = folder,
+                            selected = ticked,
+                            onClick = {
+                                selected = if (ticked) selected - folder.id else selected + folder.id
+                            },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick = { onAdd(folders.filter { it.id in selected }) },
+                    enabled = selected.isNotEmpty(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 22.dp),
+                ) {
+                    Text(stringResource(R.string.add_to_folder))
+                }
             }
         }
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+private enum class FolderPickerDestination { LOCAL, APPLE }
+
+@Composable
+private fun AppleFolderDestination(
+    playlists: UiState<List<AddonLibraryItem>>,
+    selected: Set<String>,
+    onToggle: (String) -> Unit,
+    onAdd: (List<AddonLibraryItem>) -> Unit,
+) {
+    when (playlists) {
+        is UiState.Loading -> Box(
+            modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp).padding(24.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            CircularProgressIndicator()
+        }
+        is UiState.Error -> Text(
+            text = playlists.message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.padding(horizontal = 22.dp, vertical = 18.dp),
+        )
+        is UiState.Success -> {
+            val items = playlists.data
+            if (items.isEmpty()) {
+                Text(
+                    text = stringResource(R.string.no_apple_playlists),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 22.dp, vertical = 18.dp),
+                )
+            } else {
+                LazyColumn(Modifier.heightIn(max = 320.dp)) {
+                    items(items, key = { it.id }) { playlist ->
+                        val ticked = playlist.id in selected
+                        FolderRow(
+                            title = playlist.title.ifBlank { stringResource(R.string.unknown_playlist) },
+                            subtitle = playlist.artist,
+                            selected = ticked,
+                            onClick = { onToggle(playlist.id) },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick = { onAdd(items.filter { it.id in selected }) },
+                    enabled = selected.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 22.dp),
+                ) {
+                    Text(stringResource(R.string.add_to_apple_playlist))
+                }
+            }
+        }
     }
 }
 
@@ -170,6 +270,63 @@ private fun FolderRow(folder: LocalPlaylist, selected: Boolean, onClick: () -> U
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+        }
+        Spacer(Modifier.width(12.dp))
+        Icon(
+            imageVector = if (selected) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
+            contentDescription = null,
+            tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(24.dp),
+        )
+    }
+}
+
+@Composable
+private fun FolderRow(
+    title: String,
+    subtitle: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 22.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clip(RoundedCornerShape(7.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = BitChordIcons.Plus,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+        Spacer(Modifier.width(16.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (subtitle.isNotBlank()) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
         Spacer(Modifier.width(12.dp))
         Icon(

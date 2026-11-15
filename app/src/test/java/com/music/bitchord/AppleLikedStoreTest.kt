@@ -1,5 +1,6 @@
 package com.music.bitchord
 
+import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.music.bitchord.data.apple.AppleLikedStore
@@ -12,9 +13,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
 
 /** Local Apple-liked persistence and helper mapping. */
 @RunWith(AndroidJUnit4::class)
+@Config(
+    sdk = [34],
+    application = Application::class,
+    qualifiers = "w411dp-h891dp-xhdpi",
+)
 class AppleLikedStoreTest {
 
     private val context get() = ApplicationProvider.getApplicationContext<android.app.Application>()

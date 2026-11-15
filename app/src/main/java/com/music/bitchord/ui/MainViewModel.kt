@@ -1175,6 +1175,34 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Adds one track to several Apple Music playlists as one user action.
+     *
+     * At most one failure notice is emitted for the whole selection. A failed
+     * playlist does not hide the playlists that did accept the track.
+     */
+    suspend fun addToApplePlaylists(
+        config: com.music.bitchord.data.sources.SourceConfig,
+        playlistIds: List<String>,
+        song: Song,
+    ): Result<Int> {
+        var added = 0
+        var firstFailure: Throwable? = null
+        playlistIds.forEach { playlistId ->
+            AppleLikeRepository.addToPlaylist(config, playlistId, song).fold(
+                onSuccess = { added++ },
+                onFailure = { if (firstFailure == null) firstFailure = it },
+            )
+        }
+        val failure = firstFailure
+        return if (failure == null) {
+            Result.success(added)
+        } else {
+            _appleLikeNotice.emit(failure.friendly())
+            Result.failure(failure)
+        }
+    }
+
+    /**
      * Sets (or clears) the thumbs rating on [videoId].
      *
      * Written to the screen first and rolled back if YouTube refuses. A rating

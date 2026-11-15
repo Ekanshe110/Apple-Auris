@@ -15,7 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -45,7 +45,8 @@ import coil3.compose.AsyncImage
 import com.music.bitchord.data.apple.AppleLibraryCollection
 import com.music.bitchord.data.apple.AppleLibraryScope
 import com.music.bitchord.data.apple.AppleLibraryStore
-import com.music.bitchord.data.apple.rowKey
+import com.music.bitchord.data.apple.libraryAccountFingerprint
+import com.music.bitchord.data.apple.occurrenceKey
 import com.music.bitchord.data.apple.toSong
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.data.sources.SourceConfig
@@ -68,14 +69,16 @@ fun AppleLibraryScreen(
     contentPadding: PaddingValues,
     collectionIndex: Int,
     detailId: String?,
+    detailTitle: String?,
     onCollectionChange: (Int) -> Unit,
-    onDetailChange: (String?) -> Unit,
+    onDetailChange: (String?, String?) -> Unit,
     listState: LazyListState = rememberLazyListState(),
     detailListState: LazyListState = rememberLazyListState(),
     modifier: Modifier = Modifier,
 ) {
     val collection = AppleLibraryCollection.entries[collectionIndex]
-    val scope = remember(config.id, collection, detailId) {
+    val accountFingerprint = config.libraryAccountFingerprint()
+    val scope = remember(config.id, config.baseUrl, accountFingerprint, collection, detailId) {
         AppleLibraryStore.scope(config, collection, detailId)
     }
     val state by scope.state.collectAsStateWithLifecycle()
@@ -88,7 +91,7 @@ fun AppleLibraryScreen(
     }
 
     // Load/refresh the current scope.
-    LaunchedEffect(config.id, collection, detailId) {
+    LaunchedEffect(config.id, config.baseUrl, accountFingerprint, collection, detailId) {
         scope.open(config)
     }
 
@@ -120,13 +123,13 @@ fun AppleLibraryScreen(
 
     // Internal detail stack. Back from a playlist returns to the root list.
     BackHandler(enabled = detailId != null) {
-        onDetailChange(null)
+        onDetailChange(null, null)
     }
 
     val title = if (detailId == null) {
         "Apple Music Library"
     } else {
-        collection.label
+        detailTitle?.takeIf { it.isNotBlank() } ?: collection.label
     }
 
     LazyColumn(
@@ -145,7 +148,7 @@ fun AppleLibraryScreen(
                 // to navigate up; this text just says where the listener is.
                 if (detailId != null) {
                     Text(
-                        text = "Apple Music Library / ${collection.label}",
+                        text = "Apple Music Library / $title",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 4.dp),
@@ -197,10 +200,12 @@ fun AppleLibraryScreen(
         }
 
         if (state.items.isNotEmpty()) {
-            items(
+            itemsIndexed(
                 items = state.items,
-                key = { item -> "${collection.routeName}:${detailId.orEmpty()}:${item.rowKey()}" },
-            ) { item ->
+                key = { index, item ->
+                    "${collection.routeName}:${detailId.orEmpty()}:${occurrenceKey(state.items, index)}"
+                },
+            ) { _, item ->
                 val playable = detailId != null || collection == AppleLibraryCollection.SONGS ||
                     collection == AppleLibraryCollection.LIKED
                 LibraryRow(
@@ -211,7 +216,7 @@ fun AppleLibraryScreen(
                         if (playable) {
                             item.toSong(config.id)?.let(onPlaySong)
                         } else {
-                            onDetailChange(item.id)
+                            onDetailChange(item.id, item.title)
                         }
                     },
                 )

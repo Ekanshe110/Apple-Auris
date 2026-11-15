@@ -705,6 +705,53 @@ internal fun visibleSearchReturnTab(lastSearchTab: Int, visibleTabs: List<Int>):
         candidate != TAB_SEARCH && visibleTabs.contains(candidate)
     } ?: TAB_HOME
 
+/**
+ * State used by the Apple-library page.
+ *
+ * The main app's page-switch lambda already captures close to dex's limit.
+ * Keeping the Apple route, config, callbacks and scroll states in one holder
+ * means that lambda captures one object instead of every individual value.
+ */
+private class AppleLibraryPageState(
+    val listState: LazyListState,
+    val detailListState: LazyListState,
+) {
+    var collectionIndex by mutableIntStateOf(0)
+    var detailId by mutableStateOf<String?>(null)
+    var detailTitle by mutableStateOf<String?>(null)
+    var config by mutableStateOf<com.music.bitchord.data.sources.SourceConfig?>(null)
+    var contentPadding: PaddingValues = PaddingValues()
+    var onPlaySong: (Song) -> Unit = {}
+    var onCollectionChange: (Int) -> Unit = {}
+    var onDetailChange: (String?, String?) -> Unit = {}
+}
+
+@Composable
+private fun AppleLibraryPage(state: AppleLibraryPageState) {
+    val config = state.config
+    if (config == null) {
+        Text(
+            text = "Apple Music library is not configured",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(20.dp),
+        )
+    } else {
+        AppleLibraryScreen(
+            config = config,
+            onPlaySong = state.onPlaySong,
+            contentPadding = state.contentPadding,
+            collectionIndex = state.collectionIndex,
+            detailId = state.detailId,
+            detailTitle = state.detailTitle,
+            onCollectionChange = state.onCollectionChange,
+            onDetailChange = state.onDetailChange,
+            listState = state.listState,
+            detailListState = state.detailListState,
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun BitChordApp(
@@ -900,6 +947,7 @@ private fun BitChordApp(
     var showAppleLibrary by remember { mutableStateOf(false) }
     var appleLibraryCollectionIndex by rememberSaveable { mutableIntStateOf(0) }
     var appleLibraryDetailId by rememberSaveable { mutableStateOf<String?>(null) }
+    var appleLibraryDetailTitle by rememberSaveable { mutableStateOf<String?>(null) }
     var showDiscordLogin by remember { mutableStateOf(false) }
     var discordDialog by remember { mutableStateOf<DiscordDialog?>(null) }
     var songActions by remember { mutableStateOf<Song?>(null) }
@@ -1583,6 +1631,10 @@ private fun BitChordApp(
     val historyListState = rememberLazyListState()
     val appleLibraryListState = rememberLazyListState()
     val appleLibraryDetailListState = rememberLazyListState()
+    val appleLibraryPageState = remember(
+        appleLibraryListState,
+        appleLibraryDetailListState,
+    ) { AppleLibraryPageState(appleLibraryListState, appleLibraryDetailListState) }
     val libraryShowAllGridState = rememberLazyGridState()
     val searchListState = rememberLazyListState()
     val currentListState = when (selectedTab) {
@@ -2991,6 +3043,8 @@ private fun BitChordApp(
             }
             if (id == com.music.bitchord.ui.screens.APPLE_BROWSE_ID) {
                 showAppleLibrary = true
+                appleLibraryDetailId = null
+                appleLibraryDetailTitle = null
                 return@let
             }
             // The books are not a YouTube release: their pages are our own,
@@ -3919,6 +3973,9 @@ private fun BitChordApp(
                 onAddToFolder = {
                     songActions = null
                     folderTarget = song
+                    if (appleCatalogConfig != null && !song.appleCatalogId.isNullOrBlank()) {
+                        viewModel.loadApplePlaylists(appleCatalogConfig)
+                    }
                 },
                 onAddToApplePlaylist = if (appleCatalogConfig != null && !song.appleCatalogId.isNullOrBlank()) {
                     {
@@ -4217,6 +4274,27 @@ private fun BitChordApp(
                         if (!coveredByPlayer) drawContent()
                     },
             ) {
+                // Keep the Apple page's dependencies in one holder. Besides
+                // making the route state atomic, this keeps the page-switch
+                // lambda below inside dex's constructor-width limit.
+                appleLibraryPageState.collectionIndex = appleLibraryCollectionIndex
+                appleLibraryPageState.detailId = appleLibraryDetailId
+                appleLibraryPageState.detailTitle = appleLibraryDetailTitle
+                appleLibraryPageState.config = appleCatalogConfig
+                appleLibraryPageState.contentPadding = listPadding
+                appleLibraryPageState.onPlaySong = { song ->
+                    playWithResume(listOf(song), 0)
+                }
+                appleLibraryPageState.onCollectionChange = { index ->
+                    appleLibraryCollectionIndex = index
+                    appleLibraryDetailId = null
+                    appleLibraryDetailTitle = null
+                }
+                appleLibraryPageState.onDetailChange = { id, title ->
+                    appleLibraryDetailId = id
+                    appleLibraryDetailTitle = title
+                }
+
                 // Which page is on screen, as one name. The transition runs
                 // on the difference between two of these.
                 val pageKey = when {
@@ -4564,34 +4642,7 @@ private fun BitChordApp(
                             contentPadding = listPadding,
                         )
                     } else if (key == "apple_library") {
-                        val appleConfig = appleCatalogConfig
-                        if (appleConfig == null) {
-                            Text(
-                                text = "Apple Music library is not configured",
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(20.dp),
-                            )
-                        } else {
-                            AppleLibraryScreen(
-                                config = appleConfig,
-                                onPlaySong = { song ->
-                                    playWithResume(listOf(song), 0)
-                                },
-                                contentPadding = listPadding,
-                                collectionIndex = appleLibraryCollectionIndex,
-                                detailId = appleLibraryDetailId,
-                                onCollectionChange = { index ->
-                                    appleLibraryCollectionIndex = index
-                                    appleLibraryDetailId = null
-                                },
-                                onDetailChange = { id ->
-                                    appleLibraryDetailId = id
-                                },
-                                listState = appleLibraryListState,
-                                detailListState = appleLibraryDetailListState,
-                            )
-                        }
+                        AppleLibraryPage(state = appleLibraryPageState)
                     } else if (key == "discord") {
                         DiscordScreen(
                             song = player.song,
@@ -5581,6 +5632,7 @@ private fun BitChordApp(
                         })
                         showAppleLibrary && appleLibraryDetailId != null -> ({
                             appleLibraryDetailId = null
+                            appleLibraryDetailTitle = null
                         })
                         showDiscord -> ({ showDiscord = false })
                         showHistory -> ({ showHistory = false })
@@ -6513,9 +6565,12 @@ private fun BitChordApp(
         // Library bar's "+" tile means.
         if (folderTarget != null || creatingFolder) {
             val target = folderTarget
+            val appleTargetConfig = appleCatalogConfig
+            val applePlaylists by viewModel.applePlaylists.collectAsStateWithLifecycle()
             val dismiss = {
                 folderTarget = null
                 creatingFolder = false
+                viewModel.resetApplePlaylists()
             }
             ModalBottomSheet(
                 onDismissRequest = dismiss,
@@ -6524,6 +6579,37 @@ private fun BitChordApp(
                 FolderPickerSheet(
                     folders = localPlaylists.filter { it.isFolder },
                     startCreating = target == null,
+                    applePlaylists = if (
+                        target?.appleCatalogId != null && appleTargetConfig != null
+                    ) applePlaylists else null,
+                    onAddToApple = { picked ->
+                        val song = target
+                        val config = appleTargetConfig
+                        if (song != null && config != null && picked.isNotEmpty()) {
+                            scope.launch {
+                                viewModel.addToApplePlaylists(
+                                    config = config,
+                                    playlistIds = picked.map { it.id },
+                                    song = song,
+                                ).onSuccess { added ->
+                                    showQueueNotice(
+                                        if (added == 1) {
+                                            context.getString(
+                                                R.string.track_added_to_apple_playlist,
+                                                picked.first().title,
+                                            )
+                                        } else {
+                                            context.getString(
+                                                R.string.tracks_added_to_apple_playlists,
+                                                added,
+                                            )
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                        dismiss()
+                    },
                     onAdd = { picked ->
                         target?.let { song ->
                             var added = 0
