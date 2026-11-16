@@ -157,6 +157,7 @@ private const val HOME_SCOPE_SPOTIFY = "SPOTIFY"
 private const val HOME_SCOPE_APPLE = "APPLE"
 private const val APPLE_ALBUM_PREFIX = "apple:album:"
 private const val APPLE_PLAYLIST_PREFIX = "apple:playlist:"
+private const val APPLE_ARTIST_PREFIX = "apple:artist:"
 
 /**
  * Whether Flow may open for the selected recommendation algorithm.
@@ -4628,6 +4629,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             openAppleCollection("playlists", browseId, title, subtitle, thumbnailUrl)
             return
         }
+        if (browseId.startsWith(APPLE_ARTIST_PREFIX)) {
+            openAppleCollection("artists", browseId, title, subtitle, thumbnailUrl)
+            return
+        }
         val resolved = browseTypeOf(browseId, type)
         _detailStack.value += DetailPage(
             browseId = browseId,
@@ -5033,6 +5038,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val id = when (collection) {
             "albums" -> browseId.removePrefix(APPLE_ALBUM_PREFIX)
             "playlists" -> browseId.removePrefix(APPLE_PLAYLIST_PREFIX)
+            "artists" -> browseId.removePrefix(APPLE_ARTIST_PREFIX)
             else -> browseId
         }
         _detailStack.value += DetailPage(
@@ -5041,7 +5047,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             subtitle = subtitle,
             thumbnailUrl = thumbnailUrl,
             songs = UiState.Loading,
-            type = if (collection == "albums") BrowseType.ALBUM else BrowseType.OTHER,
+            type = when (collection) {
+                "albums" -> BrowseType.ALBUM
+                "artists" -> BrowseType.ARTIST
+                else -> BrowseType.OTHER
+            },
         )
         viewModelScope.launch {
             val config = AppleCatalogRepository.activeConfig()
