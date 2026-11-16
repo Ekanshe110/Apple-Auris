@@ -1069,8 +1069,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * back into the account cache.
      */
     val library: StateFlow<UiState<LibraryPage>> =
-        combine(_library, AppleLikedStore.items) { accountLibrary, appleItems ->
-            AppleLikedStore.mergeIntoLibrary(accountLibrary, appleItems)
+        combine(_library, AppleLikedStore.items, _applePlaylists) { accountLibrary, appleItems, applePlaylists ->
+            AppleLikedStore.mergeIntoLibrary(
+                accountLibrary,
+                appleItems,
+                (applePlaylists as? UiState.Success)?.data.orEmpty(),
+            )
         }.stateIn(viewModelScope, SharingStarted.Eagerly, UiState.Loading)
 
     /** In-memory cache is partitioned by account and profile; it is never shared. */
@@ -2250,6 +2254,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // rules. Do not show it after Apple mode makes identity strict.
                 searchCache.evictAll()
                 setSearchSource(defaultSearchSource(provider))
+                if (provider == HomeProvider.APPLE) {
+                    SourceRegistry.appleCatalogConfig()?.let(::loadApplePlaylists)
+                }
             }
         }
         watchHomeShelfSettings()

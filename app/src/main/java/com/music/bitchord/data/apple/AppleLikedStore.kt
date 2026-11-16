@@ -5,7 +5,8 @@ import android.content.SharedPreferences
 import com.music.bitchord.data.model.LikeStatus
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.data.model.UiState
-import com.music.bitchord.data.model.LibraryPage
+import com.music.bitchord.data.model.HomeShelf
+import com.music.bitchord.data.model.ShelfItem
 import com.music.bitchord.data.sources.SourceRegistry
 import com.music.bitchord.data.sources.addon.AddonLibraryItem
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -49,16 +50,30 @@ object AppleLikedStore {
     internal fun mergeIntoLibrary(
         library: UiState<LibraryPage>,
         items: List<AddonLibraryItem> = _items.value,
+        playlists: List<AddonLibraryItem> = emptyList(),
     ): UiState<LibraryPage> {
         val appleLiked = items.mapNotNull { it.toLikedSong() }
-        if (appleLiked.isEmpty()) return library
+        val playlistShelf = playlists
+            .filter { it.id.isNotBlank() && it.title.isNotBlank() }
+            .map { item ->
+                ShelfItem(
+                    title = item.title,
+                    subtitle = item.artist,
+                    thumbnailUrl = item.artworkURL.ifBlank { null },
+                    videoId = null,
+                    browseId = "apple:playlist:${item.id}",
+                )
+            }
+            .takeIf { it.isNotEmpty() }
+            ?.let { HomeShelf("Apple Music Playlists", items = it) }
+        if (appleLiked.isEmpty() && playlistShelf == null) return library
         val page = (library as? UiState.Success)?.data
             ?: return if (library is UiState.Loading) {
                 UiState.Success(
                     LibraryPage(
                         likedSongs = appleLiked,
                         librarySongs = emptyList(),
-                        shelves = emptyList(),
+                        shelves = listOfNotNull(playlistShelf),
                     ),
                 )
             } else {
@@ -66,7 +81,14 @@ object AppleLikedStore {
             }
         val known = page.likedSongs.mapTo(HashSet()) { it.videoId }
         val merged = appleLiked.filter { known.add(it.videoId) } + page.likedSongs
-        return UiState.Success(page.copy(likedSongs = merged))
+        val shelves = if (playlistShelf != null) {
+            listOf(playlistShelf) + page.shelves.filterNot {
+                it.title == playlistShelf.title
+            }
+        } else {
+            page.shelves
+        }
+        return UiState.Success(page.copy(likedSongs = merged, shelves = shelves))
     }
 
     /** Rating state seeded from the persisted Apple collection. */
