@@ -207,6 +207,7 @@ import com.music.bitchord.data.sources.TrackMatcher
 import com.music.bitchord.auth.SpotifyLoginScreen
 import com.music.bitchord.ui.screens.SpotifyCanvasAuthScreen
 import com.music.bitchord.ui.screens.AppleLibraryScreen
+import com.music.bitchord.ui.screens.AppleNewScreen
 import com.music.bitchord.ui.screens.SpotifyLibraryScreen
 import com.music.bitchord.data.spotify.SPOTIFY_PAGE_PREFIX
 import com.music.bitchord.playback.AudioCache
@@ -1670,6 +1671,7 @@ private fun BitChordApp(
     val currentFeed = when {
         showSettings || showAccountScrobbling || detail != null -> null
         selectedTab == TAB_HOME -> MainViewModel.Feed.HOME
+        selectedTab == TAB_NEW -> MainViewModel.Feed.HOME
         selectedTab == TAB_PODCASTS -> MainViewModel.Feed.PODCASTS
         selectedTab == TAB_LIBRARY -> MainViewModel.Feed.LIBRARY
         else -> null
@@ -1760,6 +1762,7 @@ private fun BitChordApp(
             // arrow at the end of its heading opening the whole set. The
             // navbar was crowded enough already.
             TAB_PODCASTS to BottomTab(podcastsLabel, Icons.Rounded.GraphicEq),
+            TAB_NEW to BottomTab("New", Icons.Rounded.AutoAwesome),
             TAB_RADIO to BottomTab(radioLabel, Icons.Rounded.Radio),
             TAB_LIBRARY to BottomTab(libraryLabel, BitChordIcons.TabLibrary),
             TAB_SEARCH to BottomTab(searchLabel, BitChordIcons.TabSearch),
@@ -1767,7 +1770,13 @@ private fun BitChordApp(
     }
     // Podcasts off means the tab is gone, not greyed out: a tab that leads
     // nowhere is a tab that lies.
-    val visibleTabDefs = tabDefs.filter { it.first != TAB_PODCASTS || podcastsEnabled }
+    val visibleTabDefs = tabDefs.filter { (tab, _) ->
+        when (tab) {
+            TAB_PODCASTS -> podcastsEnabled
+            TAB_NEW -> !podcastsEnabled
+            else -> true
+        }
+    }
 
     val scope = rememberCoroutineScope()
 
@@ -2980,7 +2989,7 @@ private fun BitChordApp(
                 add(TAB_HOME)
                 add(TAB_RADIO)
                 add(TAB_LIBRARY)
-                if (AppSettings.podcastsEnabled.value) add(TAB_PODCASTS)
+                if (AppSettings.podcastsEnabled.value) add(TAB_PODCASTS) else add(TAB_NEW)
             },
         )
     }
@@ -5207,6 +5216,30 @@ private fun BitChordApp(
                             onLoadMore = viewModel::loadMoreHome,
                             loadingMore = homeLoadingMore,
                             recentlyPlayedLoading = homeRecentlyPlayedLoading,
+                        )
+                        TAB_NEW -> AppleNewScreen(
+                            state = homeState,
+                            onItemClick = { item ->
+                                val song = shelfSong(item)
+                                val browseId = item.browseId
+                                when {
+                                    song != null -> playRadio(
+                                        song,
+                                        QueueSource("New", PlaybackSourceType.HOME),
+                                    )
+                                    browseId != null -> viewModel.openDetail(
+                                        browseId = browseId,
+                                        title = item.title,
+                                        subtitle = item.subtitle,
+                                        thumbnailUrl = item.thumbnailUrl,
+                                    )
+                                }
+                            },
+                            onExploreAll = {
+                                viewModel.setSearchSource(SearchSource.APPLE)
+                                selectedTab = TAB_SEARCH
+                            },
+                            onRetry = { viewModel.refresh(MainViewModel.Feed.HOME) },
                         )
                         TAB_PODCASTS -> PodcastsScreen(
                             state = podcastsState,
@@ -7942,6 +7975,7 @@ private const val TAB_PODCASTS = 1
 private const val TAB_RADIO = 2
 private const val TAB_LIBRARY = 3
 private const val TAB_SEARCH = 4
+private const val TAB_NEW = 5
 
 /**
  * What a tab's key is prefixed with in the content switcher above.
