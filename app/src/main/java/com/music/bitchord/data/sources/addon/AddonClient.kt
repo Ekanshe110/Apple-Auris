@@ -292,6 +292,22 @@ class AddonClient(
         )
     }
 
+    /** Drop a catalog song from the user's Favourite/Favorite Songs playlist. */
+    suspend fun libraryRemoveFromFavorites(songId: String): Result<Unit> = runCatching {
+        val manifest = manifest().getOrElse { throw it }
+        val capability = manifest.library
+            ?: throw AddonUnsupportedException("This addon does not advertise library support")
+        if (!manifest.isAppleMusicCatalog) {
+            throw AddonUnsupportedException("This addon does not identify as an Apple Music catalogue")
+        }
+        val headers = libraryHeaders(capability).getOrElse { throw it }
+        postBody(
+            url = "$baseUrl/library/favorites/remove",
+            headers = headers,
+            body = "{\"ids\":[\"$songId\"]}",
+        )
+    }
+
     /** A page from any library collection declared by the manifest. */
     suspend fun libraryCollection(
         collection: String,
