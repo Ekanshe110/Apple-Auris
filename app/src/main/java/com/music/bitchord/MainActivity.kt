@@ -4043,7 +4043,7 @@ private fun BitChordApp(
                     editable != null -> {
                         {
                             songActions = null
-                            viewModel.removeFromPlaylist(it.browseId, song)
+                            viewModel.removeFromPlaylist(editable.browseId, song)
                         }
                     }
                     detail?.browseId?.startsWith("apple:playlist:") == true &&
