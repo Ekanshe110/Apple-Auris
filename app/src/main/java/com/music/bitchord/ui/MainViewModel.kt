@@ -1067,15 +1067,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * page and every rating read on the same answer without copying the rows
      * back into the account cache.
      */
-    val library: StateFlow<UiState<LibraryPage>> =
-        combine(_library, AppleLikedStore.items, _applePlaylists) { accountLibrary, appleItems, applePlaylists ->
-            AppleLikedStore.mergeIntoLibrary(
-                accountLibrary,
-                appleItems,
-                (applePlaylists as? UiState.Success)?.data.orEmpty(),
-            )
-        }.stateIn(viewModelScope, SharingStarted.Eagerly, UiState.Loading)
-
     /** In-memory cache is partitioned by account and profile; it is never shared. */
     private data class ListenerSnapshot(
         val account: Account?, val library: UiState<LibraryPage>,
@@ -1185,6 +1176,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun resetApplePlaylists() {
         _applePlaylists.value = UiState.Success(emptyList())
     }
+
+    val library: StateFlow<UiState<LibraryPage>> =
+        combine(_library, AppleLikedStore.items, _applePlaylists) { accountLibrary, appleItems, applePlaylists ->
+            AppleLikedStore.mergeIntoLibrary(
+                accountLibrary,
+                appleItems,
+                (applePlaylists as? UiState.Success)?.data.orEmpty(),
+            )
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, UiState.Loading)
 
     /**
      * Add [song] to an Apple Music library playlist.
