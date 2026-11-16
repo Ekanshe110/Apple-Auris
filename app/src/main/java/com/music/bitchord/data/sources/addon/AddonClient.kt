@@ -591,6 +591,39 @@ class AddonClient(
         ).map { it.station }
     }
 
+    /**
+     * Apple's live stations — continuous streams rather than song queues.
+     *
+     * Their audio is Widevine-protected and only Apple's own player plays
+     * it, so the app offers them as a link to Apple's page instead of
+     * pretending it can stream them.
+     */
+    suspend fun radioLiveStations(limit: Int = 25): Result<List<AddonStation>> {
+        if (limit <= 0) return Result.success(emptyList())
+        val params = mapOf("limit" to limit.coerceAtMost(50).toString())
+        return fetch<AddonStationsResponse>(
+            endpoint(listOf("radio", "live"), params),
+        ).map { it.stations }
+    }
+
+    /**
+     * Apple's own station search.
+     */
+    suspend fun radioSearchStations(
+        term: String,
+        limit: Int = 25,
+    ): Result<List<AddonStation>> {
+        val trimmed = term.trim()
+        if (trimmed.isEmpty()) return Result.success(emptyList())
+        val params = mapOf(
+            "q" to trimmed,
+            "limit" to limit.coerceAtMost(50).toString(),
+        )
+        return fetch<AddonStationsResponse>(
+            endpoint(listOf("radio", "search"), params),
+        ).map { it.stations }
+    }
+
     // ── Stream ────────────────────────────────────────────────────────────
 
     /**

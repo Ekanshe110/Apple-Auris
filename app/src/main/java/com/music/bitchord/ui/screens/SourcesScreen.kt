@@ -360,6 +360,26 @@ fun SourcesScreen(
             }
 
             RowDivider()
+            // Apple Music, offered by name because it is the source most
+            // listeners are here for: the address is already known, and only
+            // the access link has to be pasted. It is still an addon source —
+            // the same protocol, the same editor — so nothing about the
+            // source list changes for it.
+            AddSourceRow(
+                onClick = {
+                    onEditSource(
+                        SourceConfig(
+                            kind = SourceKind.ADDON,
+                            label = "Apple Music",
+                            baseUrl = APPLE_ADDON_BASE,
+                        ),
+                    )
+                },
+                title = "Apple Music",
+                detail = "Hosted Apple Music. Paste your access link to search, play and use Apple's stations.",
+            )
+
+            RowDivider()
             AddSourceRow(
                 onClick = { onEditSource(SourceConfig(kind = SourceKind.ADDON)) },
             )
@@ -772,6 +792,14 @@ private fun ReorderableAddons(
 private const val SWAP_THRESHOLD = 0.6f
 
 /**
+ * Where the hosted Apple Music addon lives.
+ *
+ * Only the address: the access link that identifies a listener's own slot is
+ * pasted into the editor on top of it.
+ */
+private const val APPLE_ADDON_BASE = "https://music.csproject.org/a/"
+
+/**
  * The one row on this screen that adds something rather than describing
  * something.
  *
@@ -781,7 +809,7 @@ private const val SWAP_THRESHOLD = 0.6f
  * put another one in here".
  */
 @Composable
-private fun AddSourceRow(onClick: () -> Unit, title: String? = null) {
+private fun AddSourceRow(onClick: () -> Unit, title: String? = null, detail: String? = null) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -812,7 +840,7 @@ private fun AddSourceRow(onClick: () -> Unit, title: String? = null) {
                 color = MaterialTheme.colorScheme.primary,
             )
             Text(
-                text = stringResource(R.string.add_addon_detail),
+                text = detail ?: stringResource(R.string.add_addon_detail),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,

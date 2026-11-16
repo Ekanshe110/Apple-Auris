@@ -5430,11 +5430,26 @@ private fun BitChordApp(
                             },
                             onStationClick = { category ->
                                 if (category.browseId.startsWith(AppleRadio.BROWSE_PREFIX)) {
-                                    // An Apple station of its own: it plays the
-                                    // tracks Apple says it plays next.
-                                    val stationId = category.params
-                                        ?: category.browseId.removePrefix(AppleRadio.BROWSE_PREFIX)
-                                    playAppleStation(stationId, category.title)
+                                    if (category.isLive == true) {
+                                        // A live station is a continuous
+                                        // Widevine-protected stream, which
+                                        // only Apple's own player plays. Open
+                                        // it there instead of pretending the
+                                        // app can queue it.
+                                        val url = category.url
+                                            ?: "https://music.apple.com/station/${category.params.orEmpty()}"
+                                        runCatching {
+                                            context.startActivity(
+                                                Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)),
+                                            )
+                                        }
+                                    } else {
+                                        // An Apple station of its own: it plays
+                                        // the tracks Apple says it plays next.
+                                        val stationId = category.params
+                                            ?: category.browseId.removePrefix(AppleRadio.BROWSE_PREFIX)
+                                        playAppleStation(stationId, category.title)
+                                    }
                                 } else if (category.browseId.startsWith("apple:")) {
                                     viewModel.openDetail(
                                         browseId = category.browseId,

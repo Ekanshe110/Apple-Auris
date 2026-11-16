@@ -116,6 +116,48 @@ class AppleRadioClientTest {
     }
 
     @Test
+    fun `live stations are read from the live route`() = runBlocking {
+        server.enqueue(
+            json(
+                """
+                {"stations":[
+                  {"id":"ra.978194965","name":"Apple Music 1","kind":"streaming","isLive":true,
+                   "subtitle":"Live Station","url":"https://music.apple.com/in/station/apple-music-1/ra.978194965"}
+                ]}
+                """.trimIndent(),
+            ),
+        )
+
+        val stations = AddonClient(server.url("/").toString()).radioLiveStations().getOrThrow()
+
+        assertEquals(1, stations.size)
+        assertTrue(stations[0].isLive == true)
+        assertEquals("Apple Music 1", stations[0].name)
+        assertEquals("/radio/live", server.takeRequest().path)
+    }
+
+    @Test
+    fun `stations are searched by term`() = runBlocking {
+        server.enqueue(
+            json(
+                """
+                {"stations":[{"id":"ra.1498155548","name":"Apple Music Hits","kind":"streaming","isLive":true}]}
+                """.trimIndent(),
+            ),
+        )
+
+        val stations = AddonClient(server.url("/").toString())
+            .radioSearchStations("hits")
+            .getOrThrow()
+
+        assertEquals(1, stations.size)
+        assertEquals("Apple Music Hits", stations[0].name)
+        val request = server.takeRequest()
+        assertEquals("/radio/search", request.path?.substringBefore("?"))
+        assertTrue(request.path!!.contains("q=hits"))
+    }
+
+    @Test
     fun `a station row keeps the apple identity the player needs`() {
         val track = AddonTrack(
             id = "617154362",
@@ -152,6 +194,27 @@ class AppleRadioClientTest {
         assertEquals("apple-radio:ra.u-1234", tile.browseId)
         assertEquals("ra.u-1234", tile.stationId)
         assertEquals("My Station", tile.title)
+        assertTrue(!tile.isLive)
+    }
+
+    @Test
+    fun `a live station tile carries the flag and Apple's page`() {
+        val tile = AppleRadio.tile(
+            com.music.bitchord.data.sources.addon.AddonStation(
+                id = "ra.978194965",
+                name = "Apple Music 1",
+                kind = "streaming",
+                isLive = true,
+                subtitle = "Live Station",
+                url = "https://music.apple.com/in/station/apple-music-1/ra.978194965",
+            ),
+        )
+
+        assertTrue(tile.isLive)
+        assertEquals(
+            "https://music.apple.com/in/station/apple-music-1/ra.978194965",
+            tile.url,
+        )
     }
 
     private fun json(text: String, status: Int = 200): MockResponse =

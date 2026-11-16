@@ -341,10 +341,21 @@ data class AddonHomeItem(
 data class AddonStation(
     @SerialName("id") val id: String = "",
     @SerialName("name") val name: String = "",
-    /** `user`, `songSeeded`, `playlistSeeded` — Apple's own name for the kind. */
+    /** `user`, `songSeeded`, `playlistSeeded`, `streaming` — Apple's own name for the kind. */
     @SerialName("kind") val kind: String? = null,
+    /**
+     * Whether this station is a continuous live stream rather than a rolling
+     * selection of songs.
+     *
+     * Apple's live stations are Widevine-protected and only Apple's own
+     * player plays them, so the app offers them as a link rather than as a
+     * queue it can stream itself.
+     */
+    @SerialName("isLive") val isLive: Boolean? = null,
     @SerialName("subtitle") val subtitle: String? = null,
     @SerialName("artworkURL") val artworkURL: String? = null,
+    /** Apple's own page for the station, when it published one. */
+    @SerialName("url") val url: String? = null,
 )
 
 @Serializable

@@ -75,6 +75,35 @@ internal object AppleRadio {
         }
 
     /**
+     * Apple's live stations: continuous streams, not song queues.
+     *
+     * Apple's own player is the only thing that can play them — the stream is
+     * Widevine-protected — so the app shows them and sends the listener to
+     * Apple's page rather than queueing songs that are not what the station
+     * is.
+     */
+    suspend fun liveStations(limit: Int = 25): Result<List<AddonStation>> =
+        withContext(Dispatchers.IO) {
+            val client = client() ?: return@withContext Result.failure(
+                IllegalStateException("Apple Music addon is unavailable"),
+            )
+            client.radioLiveStations(limit)
+        }
+
+    /**
+     * Apple's own station search.
+     */
+    suspend fun searchStations(
+        term: String,
+        limit: Int = 25,
+    ): Result<List<AddonStation>> = withContext(Dispatchers.IO) {
+        val client = client() ?: return@withContext Result.failure(
+            IllegalStateException("Apple Music addon is unavailable"),
+        )
+        client.radioSearchStations(term, limit)
+    }
+
+    /**
      * One station row as the Radio tab's own station tile.
      *
      * The id is kept in the browse id so the tile can be told apart from a
@@ -86,6 +115,8 @@ internal object AppleRadio {
         subtitle = station.subtitle.orEmpty(),
         thumbnailUrl = station.artworkURL?.ifBlank { null },
         stationId = station.id,
+        isLive = station.isLive == true,
+        url = station.url?.ifBlank { null },
     )
 
     /** The browse-id prefix that marks a tile as an Apple station. */
@@ -137,4 +168,8 @@ internal data class AppleStationTile(
     val subtitle: String,
     val thumbnailUrl: String?,
     val stationId: String,
+    /** A continuous stream only Apple's own player can play. */
+    val isLive: Boolean = false,
+    /** Apple's page for the station, for a listener whose device cannot play it. */
+    val url: String? = null,
 )

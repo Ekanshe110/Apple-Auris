@@ -579,6 +579,16 @@ data class MoodGenre(
     val thumbnailUrl: String? = null,
     /** YouTube Music's own stripe colour for the button, as ARGB; null when the button carries none. */
     val stripeColor: Long? = null,
+    /**
+     * Whether this tile is a continuous live stream rather than a collection.
+     *
+     * Apple's live stations are streams rather than song lists, and the app
+     * has to say so on the tile: tapping one opens Apple's own player
+     * instead of starting a queue.
+     */
+    val isLive: Boolean? = null,
+    /** The provider's own page for this tile, when it published one. */
+    val url: String? = null,
 )
 
 /**

@@ -438,6 +438,21 @@ private fun StationTile(genre: MoodGenre, onClick: () -> Unit, modifier: Modifie
                     ),
                 ),
         )
+        if (genre.isLive == true) {
+            // A live station is a stream, not a collection of songs, and the
+            // tile has to say which it is before it is tapped.
+            Text(
+                text = "LIVE",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(start = 10.dp, top = 10.dp)
+                    .background(Color(0xFFE1113C), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+        }
         Text(
             text = genre.title,
             style = MaterialTheme.typography.titleMedium,
