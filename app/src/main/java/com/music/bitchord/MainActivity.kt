@@ -678,12 +678,19 @@ private fun AppRootBox(content: @Composable BoxScope.() -> Unit) {
     }
 }
 
-/** Search sources offered while Apple mode is on or off. */
-internal fun visibleSearchSources(appleModeEnabled: Boolean): List<SearchSource> = buildList {
-    add(SearchSource.YOUTUBE)
-    add(SearchSource.SPOTIFY)
-    add(SearchSource.LIBRARY)
-    if (appleModeEnabled) add(SearchSource.APPLE)
+internal fun visibleSearchSources(provider: HomeProvider): List<SearchSource> {
+    val preferred = when (provider) {
+        HomeProvider.APPLE -> SearchSource.APPLE
+        HomeProvider.SPOTIFY -> SearchSource.SPOTIFY
+        HomeProvider.YOUTUBE -> SearchSource.YOUTUBE
+    }
+    return buildList {
+        add(preferred)
+        SearchSource.entries
+            .filter { it != preferred && it != SearchSource.LIBRARY }
+            .forEach(::add)
+        add(SearchSource.LIBRARY)
+    }
 }
 
 /**
@@ -2994,7 +3001,7 @@ private fun BitChordApp(
         onToggleSource = {
             // Cycle only through the sources currently offered. Apple is
             // additive and never displaces Spotify.
-            val currentSources = visibleSearchSources(appleModeEnabled)
+            val currentSources = visibleSearchSources(applePageState.homeProvider)
             onSearchSourceChange(
                 currentSources[
                     (currentSources.indexOf(searchSource) + 1)
@@ -5461,9 +5468,7 @@ private fun BitChordApp(
                                 // second local for it: this page is the widest
                                 // lambda in the app, and every captured value
                                 // costs a dex register in its constructor.
-                                val currentSources = visibleSearchSources(
-                                    applePageState.homeProvider == HomeProvider.APPLE,
-                                )
+                                val currentSources = visibleSearchSources(applePageState.homeProvider)
                                 SegmentedControl(
                                     options = currentSources.map { source ->
                                         when (source) {
