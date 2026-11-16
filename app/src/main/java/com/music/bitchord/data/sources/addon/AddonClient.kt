@@ -828,6 +828,10 @@ class AddonClient(
                     // The sources screen renders the two differently, and
                     // painting a transient outage as a configuration error
                     // sends people to re-paste a URL that was always correct.
+                    // A gate restart answers 503 for a few seconds. One short
+                    // retry rides over it; a genuinely dead server still fails
+                    // on the next answer.
+                    response.code == 503 && attempt < 2 -> 800L
                     response.code >= 500 -> throw AddonUnavailable("HTTP ${response.code}")
                     response.code != 429 -> throw AddonException("HTTP ${response.code}")
                     attempt >= MAX_RETRIES -> throw AddonUnavailable("This addon is rate limiting Auris")
