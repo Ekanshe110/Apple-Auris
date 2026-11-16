@@ -1548,8 +1548,7 @@ object AudioCache {
                         // A search that is already in flight is worth finishing;
                         // the byte pass below is the part that should stop when
                         // the queue moves.
-                        withContext(kotlinx.coroutines.NonCancellable) {
-                            runCatching {
+                        runCatching {
                                 // A Spotify catalogue row is the one case
                                 // where the patient search is the wrong
                                 // shape.
@@ -1583,7 +1582,6 @@ object AudioCache {
                                 }
                                 .getOrNull()
                                 ?.also { StreamChoice.remember(next, it, substituted = true) }
-                        }
                     } finally {
                         StreamChoice.endPreparing(next)
                     }
