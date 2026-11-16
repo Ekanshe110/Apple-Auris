@@ -20,6 +20,9 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -109,6 +112,11 @@ internal object SpotifyHomeSource {
      * only be guessed at.
      */
     private val spotifyIds = ConcurrentHashMap<String, String>()
+
+    private var matchPrefs: android.content.SharedPreferences? = null
+    private const val MATCH_PREFS = "spotify_matches"
+    private const val MATCH_KEY = "rows"
+    private const val MATCH_LIMIT = 500
 
     /** Whether a listener's session can be read. */
     fun isSignedIn(): Boolean = AppSettings.spotifySpdcToken.value.isNotBlank()
@@ -463,6 +471,7 @@ internal object SpotifyHomeSource {
                     .getOrNull()
                 matched?.let {
                     matches[track.id] = it
+                    persistMatches()
                     rememberSpotifyId(it.videoId, track.id)
                     track to it
                 }
@@ -598,6 +607,71 @@ internal object SpotifyHomeSource {
     internal fun rememberSpotifyId(videoId: String, trackId: String) {
         if (videoId.isBlank() || trackId.isBlank()) return
         spotifyIds[videoId] = trackId
+    }
+
+    /** Loads the persisted Spotify→playable matches once, at app start. */
+    fun init(context: Context) {
+        if (matchPrefs != null) return
+        val prefs = context.applicationContext.getSharedPreferences(
+            MATCH_PREFS,
+            Context.MODE_PRIVATE,
+        )
+        matchPrefs = prefs
+        val raw = prefs.getString(MATCH_KEY, null) ?: return
+        runCatching {
+            val array = JSONArray(raw)
+            for (i in 0 until array.length()) {
+                val row = array.optJSONObject(i) ?: continue
+                val spotifyId = row.optString("spotifyId")
+                val videoId = row.optString("videoId")
+                if (spotifyId.isBlank() || videoId.isBlank()) continue
+                matches[spotifyId] = Song(
+                    videoId = videoId,
+                    title = row.optString("title"),
+                    artist = row.optString("artist"),
+                    albumName = row.optString("album").takeIf { it.isNotBlank() },
+                    thumbnailUrl = row.optString("artwork").takeIf { it.isNotBlank() },
+                    durationText = row.optString("duration").takeIf { it.isNotBlank() },
+                    appleCatalogId = row.optString("appleId").takeIf { it.isNotBlank() },
+                    isrc = row.optString("isrc").takeIf { it.isNotBlank() },
+                    isExplicit = when (row.optString("explicit")) {
+                        "1" -> true
+                        "0" -> false
+                        else -> null
+                    },
+                )
+            }
+        }
+    }
+
+    private fun persistMatches() {
+        val prefs = matchPrefs ?: return
+        runCatching {
+            val array = JSONArray()
+            matches.entries.take(MATCH_LIMIT).forEach { (spotifyId, song) ->
+                array.put(
+                    JSONObject()
+                        .put("spotifyId", spotifyId)
+                        .put("videoId", song.videoId)
+                        .put("title", song.title)
+                        .put("artist", song.artist)
+                        .put("album", song.albumName.orEmpty())
+                        .put("artwork", song.thumbnailUrl.orEmpty())
+                        .put("duration", song.durationText.orEmpty())
+                        .put("appleId", song.appleCatalogId.orEmpty())
+                        .put("isrc", song.isrc.orEmpty())
+                        .put(
+                            "explicit",
+                            when (song.isExplicit) {
+                                true -> "1"
+                                false -> "0"
+                                null -> ""
+                            },
+                        ),
+                )
+            }
+            prefs.edit().putString(MATCH_KEY, array.toString()).apply()
+        }
     }
 
     /**
