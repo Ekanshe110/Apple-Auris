@@ -6,6 +6,9 @@ import com.music.bitchord.data.model.BrowseType
 import com.music.bitchord.data.model.SearchFilter
 import com.music.bitchord.data.model.SearchResult
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -106,8 +109,18 @@ internal object SpotifySearch {
         // whose answers are known: `searchTracks` answers
         // `searchV2.tracksV2.items[].item.data`, and the others answer their
         // own section's `items[].data`.
-        for ((operation, tab) in tabOperations(filter)) {
-            val answer = ask(operation, tabVariables(query, tab, offset)) { failures += it }
+        val tabAnswers = coroutineScope {
+            tabOperations(filter).map { (operation, tab) ->
+                async {
+                    operation to tab to ask(
+                        operation,
+                        tabVariables(query, tab, offset),
+                    ) { failures += it }
+                }
+            }.awaitAll()
+        }
+        for ((operationAndTab, answer) in tabAnswers) {
+            val (operation, tab) = operationAndTab
             val section = answer?.obj("searchV2") ?: answer ?: continue
             if (section.hasNothing()) {
                 Log.d(TAG, "Spotify's $operation answered an empty search")
