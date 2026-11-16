@@ -299,7 +299,7 @@ class AddonLibraryClientTest {
 
         val otherClient = AddonClient(server.url("/").toString(), libraryCredential = "secret-token")
         server.enqueue(json(manifestJson))
-        server.enqueue(MockResponse().setResponseCode(503))
+        repeat(3) { server.enqueue(MockResponse().setResponseCode(503)) }
         val unavailable = otherClient.libraryPlaylists().exceptionOrNull()
         assertTrue(unavailable is AddonUnavailable)
     }
