@@ -289,7 +289,15 @@ object AppleEnrichment {
                 TrackLog.w(TAG, "Apple enrichment failed for '${song.title}': ${failure.message}")
                 return Result.failure(failure)
             }
-        return Result.success(exactAppleMatch(song, rows)?.toResolution())
+        exactAppleMatch(song, rows)?.let { return Result.success(it.toResolution()) }
+        // Last attempt with the title alone: Apple's artist credit for film
+        // rows is often a longer list than the source's, and the combined
+        // query can bury the right recording. The matcher still requires
+        // artist overlap, runtime tolerance and rating compatibility.
+        val byTitle = source.searchResult(song.title, limit = 10, request = null)
+            .getOrNull()
+            .orEmpty()
+        return Result.success(exactAppleMatch(song, byTitle)?.toResolution())
     }
 
     internal data class AppleMatch(
