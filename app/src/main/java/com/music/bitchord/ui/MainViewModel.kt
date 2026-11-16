@@ -2646,7 +2646,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var exploreRequested = false
 
     private suspend fun fetchExplore() {
-        if (AppSettings.homeProvider.value == HomeProvider.APPLE) {
+        if (AppSettings.homeProvider.value == HomeProvider.APPLE &&
+            AppSettings.recommendationAlgorithm.value == RecommendationAlgorithm.APPLE
+        ) {
             val shelves = AppleHomeSource.shelves().getOrNull().orEmpty()
             val items = shelves
                 .flatMap { it.items }
