@@ -5334,7 +5334,10 @@ private fun BitChordApp(
                                             it != com.music.bitchord.data.model.SearchFilter.PODCASTS
                                     }
                                 searchSource == SearchSource.APPLE ->
-                                    listOf(com.music.bitchord.data.model.SearchFilter.SONGS)
+                                    com.music.bitchord.data.model.SearchFilter.entries.filter {
+                                        it != com.music.bitchord.data.model.SearchFilter.VIDEOS &&
+                                            it != com.music.bitchord.data.model.SearchFilter.PODCASTS
+                                    }
                                 podcastsEnabled -> com.music.bitchord.data.model.SearchFilter.entries
                                 else -> com.music.bitchord.data.model.SearchFilter.entries
                                     .filter { it != com.music.bitchord.data.model.SearchFilter.PODCASTS }

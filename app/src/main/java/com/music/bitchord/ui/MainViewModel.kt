@@ -3761,9 +3761,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 submitSearch()
             }
             SearchSource.APPLE -> {
-                // The current addon protocol exposes tracks only. A filter the
-                // request cannot honour must not remain selected.
-                _filter.value = SearchFilter.SONGS
+                // The addon now answers albums, artists and playlists too.
+                // Only the two filters Apple has no rows for are reset.
+                if (_filter.value == SearchFilter.VIDEOS ||
+                    _filter.value == SearchFilter.PODCASTS
+                ) {
+                    _filter.value = SearchFilter.ALL
+                }
                 submitSearch()
             }
         }
