@@ -1225,14 +1225,9 @@ private fun BitChordApp(
     val libraryState by viewModel.library.collectAsStateWithLifecycle()
     val filter by viewModel.filter.collectAsStateWithLifecycle()
     val searchSource by viewModel.searchSource.collectAsStateWithLifecycle()
-    // Apple mode owns the Search catalogue even before an addon is configured.
-    // A missing configuration is then an explicit search error, not a silent
-    // return to YouTube and not a reason to hide the Apple source.
-    val uiProvider by AppSettings.uiProvider.collectAsStateWithLifecycle()
     // The skin follows the UI choice. Audio, metadata and playback identity
     // still follow homeProvider; Apple strict helpers use
     // AppSettings.appleRichModeEnabled directly.
-    val appleModeEnabled = uiProvider == HomeProvider.APPLE
     val appleCatalogConfigs by SourceRegistry.configs.collectAsStateWithLifecycle()
     val appleCatalogConfig = remember(appleCatalogConfigs, homeProvider) {
         appleCatalogConfigs.firstOrNull {
@@ -5558,7 +5553,11 @@ private fun BitChordApp(
                                 )
                             },
                             searchingLibrary = searchSource == SearchSource.LIBRARY,
-                            appleBrowse = uiProvider == HomeProvider.APPLE,
+                            emptyMessage = when (searchSource) {
+                                SearchSource.SPOTIFY -> stringResource(R.string.search_empty_spotify)
+                                else -> null
+                            },
+                            appleBrowse = searchSource == SearchSource.APPLE,
                             onBrowseGenre = { genre -> viewModel.searchFor(genre) },
                             libraryResults = libraryResults,
                             // The same queue opening the Local Music folder and
