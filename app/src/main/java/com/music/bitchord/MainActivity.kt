@@ -5554,6 +5554,8 @@ private fun BitChordApp(
                                 )
                             },
                             searchingLibrary = searchSource == SearchSource.LIBRARY,
+                            appleBrowse = searchSource == SearchSource.APPLE,
+                            onBrowseGenre = { genre -> viewModel.searchFor(genre) },
                             libraryResults = libraryResults,
                             // The same queue opening the Local Music folder and
                             // tapping the row there would give.
