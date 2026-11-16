@@ -45,6 +45,7 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.coroutineContext
@@ -368,6 +369,10 @@ object AudioCache {
 
     /** Old row identities already evicted for Apple mode. */
     private val appleEvictedOriginals = ConcurrentHashMap.newKeySet<String>()
+
+    /** Cache keys whose opening read-ahead is already in flight. */
+    private val openingFetches =
+        Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
 
     /**
      * This object has no Context of its own, and the background data policy
@@ -3787,9 +3792,15 @@ object AudioCache {
         // worth, because it is what makes the track begin the moment it is
         // reached and it must not wait on a round trip that is only about
         // sizing the analysis.
-        if (cache.getCachedBytes(key, 0, PRELOAD_BYTES) < PRELOAD_BYTES) {
-            TrackLog.d(TAG, "read-ahead fetching the opening of $mediaId from its source", about = mediaId)
-            fetch(key, uri, 0, PRELOAD_BYTES, pinKey = true)
+        if (cache.getCachedBytes(key, 0, PRELOAD_BYTES) < PRELOAD_BYTES &&
+            openingFetches.add(key)
+        ) {
+            try {
+                TrackLog.d(TAG, "read-ahead fetching the opening of $mediaId from its source", about = mediaId)
+                fetch(key, uri, 0, PRELOAD_BYTES, pinKey = true)
+            } finally {
+                openingFetches.remove(key)
+            }
         }
         // Then the length. It sizes the rest of the opening, and it is what the
         // analyser divides by to decide whether what is already on disk is
