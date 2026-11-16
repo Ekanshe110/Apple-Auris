@@ -3,7 +3,9 @@ package com.music.bitchord.ui.screens
 import com.music.bitchord.sharedui.resources.*
 import org.jetbrains.compose.resources.stringResource
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -77,6 +79,12 @@ fun RadioScreen(
     seeds: List<ShelfItem>,
     onSeedClick: (ShelfItem) -> Unit,
     onStationClick: (MoodGenre) -> Unit,
+    /**
+     * A long press on a station tile: open the same station on Apple Music.
+     * Tap keeps playing the catalogue surrogate, which is the only copy this
+     * app can actually stream.
+     */
+    onStationLongClick: ((MoodGenre) -> Unit)? = null,
     onStartStation: () -> Unit,
     /** Opens the moods-and-genres grid, which used to sit on its own tab. */
     onGenresClick: () -> Unit,
@@ -161,7 +169,7 @@ fun RadioScreen(
                             SectionHeader(stringResource(Res.string.radio_stations))
                         }
                         item(key = "stations") {
-                            StationGrid(genres = genres, onStationClick = onStationClick)
+                            StationGrid(genres = genres, onStationClick = onStationClick, onStationLongClick = onStationLongClick)
                         }
                     }
                 }
@@ -380,7 +388,11 @@ private fun StartStationRow(onClick: () -> Unit) {
 
 /** Apple's Radio wall: square station tiles, three to a phone row. */
 @Composable
-private fun StationGrid(genres: List<MoodGenre>, onStationClick: (MoodGenre) -> Unit) {
+private fun StationGrid(
+    genres: List<MoodGenre>,
+    onStationClick: (MoodGenre) -> Unit,
+    onStationLongClick: ((MoodGenre) -> Unit)? = null,
+) {
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val columns = (maxWidth / 118.dp).toInt().coerceIn(3, 5)
         Column(
@@ -395,6 +407,7 @@ private fun StationGrid(genres: List<MoodGenre>, onStationClick: (MoodGenre) -> 
                         StationTile(
                             genre = genre,
                             onClick = { onStationClick(genre) },
+                            onLongClick = onStationLongClick?.let { it::invoke },
                             modifier = Modifier.weight(1f),
                         )
                     }
@@ -408,7 +421,13 @@ private fun StationGrid(genres: List<MoodGenre>, onStationClick: (MoodGenre) -> 
 }
 
 @Composable
-private fun StationTile(genre: MoodGenre, onClick: () -> Unit, modifier: Modifier = Modifier) {
+@OptIn(ExperimentalFoundationApi::class)
+private fun StationTile(
+    genre: MoodGenre,
+    onClick: () -> Unit,
+    onLongClick: ((MoodGenre) -> Unit)? = null,
+    modifier: Modifier = Modifier,
+) {
     val wash = remember(genre.stripeColor, genre.title) {
         genre.stripeColor?.let { Color(it.toInt()) } ?: Color(0xFF3A3A3C)
     }
@@ -417,7 +436,10 @@ private fun StationTile(genre: MoodGenre, onClick: () -> Unit, modifier: Modifie
             .aspectRatio(1f)
             .clip(RoundedCornerShape(16.dp))
             .background(wash)
-            .clickable(onClick = onClick),
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick?.let { open -> { open(genre) } },
+            ),
     ) {
         genre.thumbnailUrl?.let { art ->
             AsyncImage(
