@@ -3941,29 +3941,63 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         }
                         return@collectLatest
                     }
-                    val rows: Result<List<Song>> = if (source is AddonSource) {
-                        source.searchResult(request.query, 50, request = null)
-                    } else {
-                        runCatching {
-                            source.search(request.query, 50, waitForAll = false, request = null)
-                        }
+                    val wantsTracks = request.filter == SearchFilter.SONGS ||
+                        request.filter == SearchFilter.ALL
+                    val browseTypes = when (request.filter) {
+                        SearchFilter.ALL -> "albums,playlists,artists"
+                        SearchFilter.ALBUMS -> "albums"
+                        SearchFilter.ARTISTS -> "artists"
+                        SearchFilter.PLAYLISTS -> "playlists"
+                        else -> null
                     }
-                    if (rows.isFailure) {
-                        val failure = rows.exceptionOrNull() ?: IllegalStateException("Apple Music search failed")
+                    val (tracksResult, browseResult) = coroutineScope {
+                        val tracks = async {
+                            if (!wantsTracks) {
+                                Result.success(emptyList<Song>())
+                            } else if (source is AddonSource) {
+                                source.searchResult(request.query, 50, request = null)
+                            } else {
+                                runCatching {
+                                    source.search(
+                                        request.query,
+                                        50,
+                                        waitForAll = false,
+                                        request = null,
+                                    )
+                                }
+                            }
+                        }
+                        val browse = async {
+                            val types = browseTypes
+                            if (types == null || source !is AddonSource) {
+                                Result.success(emptyList<BrowseItem>())
+                            } else {
+                                source.searchBrowseResult(request.query, types)
+                            }
+                        }
+                        tracks.await() to browse.await()
+                    }
+                    if (tracksResult.isFailure && browseResult.isFailure) {
+                        val failure = tracksResult.exceptionOrNull()
+                            ?: browseResult.exceptionOrNull()
+                            ?: IllegalStateException("Apple Music search failed")
                         if (request.requestId == newestRequestId.get()) {
                             _results.value = UiState.Error(failure.friendly())
                         }
                         return@collectLatest
                     }
-                    val tracks = rows.getOrThrow()
                     if (request.requestId != newestRequestId.get()) return@collectLatest
+                    val rows = tracksResult.getOrNull().orEmpty()
+                        .map { SearchResult.Track(it) } +
+                        browseResult.getOrNull().orEmpty()
+                            .map { SearchResult.Browse(it) }
                     _results.value = publishedRows(
-                        rows = tracks.map { SearchResult.Track(it) },
+                        rows = rows,
                         continuation = null,
                         nextOffset = null,
                         key = key,
                         requestId = request.requestId,
-                        filter = SearchFilter.SONGS,
+                        filter = request.filter,
                         source = request.source,
                     )
                     return@collectLatest

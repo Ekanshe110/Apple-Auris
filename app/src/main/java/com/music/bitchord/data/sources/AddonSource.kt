@@ -1,6 +1,8 @@
 package com.music.bitchord.data.sources
 
 import com.music.bitchord.data.TrackLog
+import com.music.bitchord.data.model.BrowseItem
+import com.music.bitchord.data.model.BrowseType
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.data.sources.addon.AddonClient
 import com.music.bitchord.data.sources.addon.AddonException
@@ -296,6 +298,40 @@ class AddonSource(
                     )
                 }
                 .toList()
+        }
+    }
+
+    /** Album, playlist and artist cards for one search query. */
+    suspend fun searchBrowseResult(
+        query: String,
+        types: String,
+    ): Result<List<BrowseItem>> = withContext(Dispatchers.IO) {
+        if (query.isBlank()) return@withContext Result.success(emptyList())
+        if (shutOut("a browse search")) {
+            return@withContext Result.failure(AddonException("Addon is switched off"))
+        }
+        client.searchBrowse(query, types).map { items ->
+            items.mapNotNull { item ->
+                val type = when (item.type.lowercase(Locale.ROOT)) {
+                    "album" -> BrowseType.ALBUM
+                    "playlist" -> BrowseType.PLAYLIST
+                    "artist" -> BrowseType.ARTIST
+                    else -> return@mapNotNull null
+                }
+                val prefix = when (type) {
+                    BrowseType.ALBUM -> "apple:album:"
+                    BrowseType.PLAYLIST -> "apple:playlist:"
+                    else -> "apple:artist:"
+                }
+                if (item.id.isBlank() || item.title.isBlank()) return@mapNotNull null
+                BrowseItem(
+                    browseId = prefix + item.id,
+                    title = item.title,
+                    subtitle = item.artist,
+                    thumbnailUrl = item.artworkURL,
+                    type = type,
+                )
+            }
         }
     }
 
