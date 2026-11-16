@@ -348,6 +348,16 @@ object AppSettings {
     val homeProvider = MutableStateFlow(HomeProvider.YOUTUBE)
 
     /**
+     * Which catalogue skin the screens wear.
+     *
+     * Independent of [homeProvider] (where audio, metadata, lyrics and art come
+     * from) and of [recommendationAlgorithm] (what Home and Autoplay suggest).
+     * A combination is legal: Apple look over Spotify audio is Apple rows drawn
+     * with Spotify data, not Apple data.
+     */
+    val uiProvider = MutableStateFlow(HomeProvider.YOUTUBE)
+
+    /**
      * Which recommendation algorithm builds Home, Flow and Autoplay.
      *
      * Separate from [homeProvider]: this changes discovery, not the catalogue,
@@ -1568,6 +1578,9 @@ object AppSettings {
         val storedHomeProvider = prefs.getString(KEY_HOME_PROVIDER, null)
         val legacyAppleEnabled = prefs.getBoolean(KEY_APPLE_CATALOG_ENABLED, false)
         homeProvider.value = migratedHomeProvider(storedHomeProvider, legacyAppleEnabled)
+        uiProvider.value = prefs.getString(KEY_UI_PROVIDER, null)
+            ?.let { HomeProvider.of(it) }
+            ?: homeProvider.value
         recommendationAlgorithm.value = RecommendationAlgorithm.of(
             prefs.getString(KEY_RECOMMENDATION_ALGORITHM, null)
                 ?: when (homeProvider.value) {
@@ -2174,6 +2187,11 @@ object AppSettings {
         // process dies is a switch that reports success and comes back on the
         // old provider — which is exactly what it did.
         prefs.edit().putString(KEY_HOME_PROVIDER, value.name).commit()
+    }
+
+    fun setUiProvider(value: HomeProvider) {
+        uiProvider.value = value
+        prefs.edit().putString(KEY_UI_PROVIDER, value.name).apply()
     }
 
     /** Records the recommendation algorithm used by Home, Flow and Autoplay. */
@@ -3275,6 +3293,7 @@ object AppSettings {
     private const val KEY_AUTO_UPGRADE_LOCAL_STORAGE = "auto_upgrade_local_storage"
     private const val KEY_AUTOMIX_PERFORMANCE_MODE = "automix_performance_mode"
     private const val KEY_HOME_PROVIDER = "home_provider"
+    private const val KEY_UI_PROVIDER = "ui_provider"
     private const val KEY_RECOMMENDATION_ALGORITHM = "recommendation_algorithm"
     private const val KEY_AUTOMIX_ENGINE = "automix_engine"
     private const val KEY_SKIP_SILENCE = "skip_silence"
