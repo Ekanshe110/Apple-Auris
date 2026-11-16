@@ -757,6 +757,25 @@ object AppSettings {
      */
     val podcastsEnabled = MutableStateFlow(false)
 
+    private val lastFolderKey = "folder:last"
+    private val lastApplePlaylistKey = "folder:last_apple"
+
+    fun lastFolderId(): String? =
+        prefs.getString(lastFolderKey, null)?.takeIf { it.isNotBlank() }
+
+    fun rememberLastFolder(id: String) {
+        if (id.isBlank()) return
+        prefs.edit().putString(lastFolderKey, id).apply()
+    }
+
+    fun lastApplePlaylistId(): String? =
+        prefs.getString(lastApplePlaylistKey, null)?.takeIf { it.isNotBlank() }
+
+    fun rememberLastApplePlaylist(id: String) {
+        if (id.isBlank()) return
+        prefs.edit().putString(lastApplePlaylistKey, id).apply()
+    }
+
     /**
      * How strong the [liquidGlass] material is,
      * [MIN_LIQUID_GLASS_INTENSITY]..[MAX_LIQUID_GLASS_INTENSITY], multiplied
