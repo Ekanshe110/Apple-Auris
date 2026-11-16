@@ -2280,21 +2280,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         startSearchPipeline()
         startSuggestPipeline()
         startTypeaheadMediaPipeline()
+        SourceRegistry.appleCatalogConfig()?.let(::loadApplePlaylists)
         viewModelScope.launch {
-            AppSettings.homeProvider.collect { provider ->
+            _spotifyPlaylists.value = runCatching {
+                SpotifyLibrary.playlists()
+            }.getOrDefault(emptyList())
+        }
+        viewModelScope.launch {
+        AppSettings.homeProvider.collect { provider ->
                 // A cached answer was enriched under the previous provider's
                 // rules. Do not show it after Apple mode makes identity strict.
                 searchCache.evictAll()
                 setSearchSource(defaultSearchSource(provider))
-                if (provider == HomeProvider.APPLE) {
-                    SourceRegistry.appleCatalogConfig()?.let(::loadApplePlaylists)
-                }
-                if (provider == HomeProvider.SPOTIFY) {
-                    viewModelScope.launch {
-                        _spotifyPlaylists.value = runCatching {
-                            SpotifyLibrary.playlists()
-                        }.getOrDefault(emptyList())
-                    }
+                SourceRegistry.appleCatalogConfig()?.let(::loadApplePlaylists)
+                viewModelScope.launch {
+                    _spotifyPlaylists.value = runCatching {
+                        SpotifyLibrary.playlists()
+                    }.getOrDefault(emptyList())
                 }
             }
         }
