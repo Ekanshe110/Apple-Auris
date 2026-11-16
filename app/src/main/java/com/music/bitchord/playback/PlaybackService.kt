@@ -736,6 +736,13 @@ class PlaybackService : MediaLibraryService() {
     private var trackSelectedAt: Long? = null
 
     /**
+     * When the last seek was issued, so the next audible frame can report how
+     * long the seek actually cost. Null once reported; a seek that never
+     * produces sound leaves it set and the next seek overwrites it.
+     */
+    private var seekStartedAt: Long? = null
+
+    /**
      * The last track that actually made a sound, which is how [recoverFrom]
      * tells "this never started" from "this died in the middle".
      *
@@ -958,6 +965,14 @@ class PlaybackService : MediaLibraryService() {
                     )
                     trackSelectedAt = null
                 }
+                seekStartedAt?.let { started ->
+                    TrackLog.d(
+                        "BitChord",
+                        "TIMING seek first audio: ${SystemClock.elapsedRealtime() - started}ms",
+                        about = exoPlayer.currentMediaItem?.mediaId,
+                    )
+                    seekStartedAt = null
+                }
                 // Sound is out of the speaker, so whatever happens to this track
                 // from here is a failure mid-song. Also the one thing that can
                 // say the queue is not simply unplayable end to end.
@@ -1062,6 +1077,12 @@ class PlaybackService : MediaLibraryService() {
         ) {
             val exoPlayer = player ?: return
             if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                seekStartedAt = SystemClock.elapsedRealtime()
+                TrackLog.d(
+                    "BitChord",
+                    "TIMING seek: ${newPosition.positionMs}ms in ${newPosition.mediaItem?.mediaId}",
+                    about = newPosition.mediaItem?.mediaId,
+                )
                 if (exoPlayer.isPlaying) pushDiscordPresence(exoPlayer)
                 updateLyricSubtitle()
             }

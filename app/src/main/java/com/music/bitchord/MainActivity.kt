@@ -382,6 +382,7 @@ import com.music.bitchord.ui.replay.rememberReplayState
 import com.music.bitchord.ui.theme.BitChordTheme
 import com.music.bitchord.ui.theme.rememberArtworkPalette
 import com.music.bitchord.data.canvas.AppleArtistArtRepository
+import com.music.bitchord.data.canvas.AppleMusicCanvas
 import com.music.bitchord.data.canvas.keyColors
 import com.music.bitchord.ui.theme.SystemBarIcons
 import com.music.bitchord.ui.utils.guardSheetFromContentTouches
@@ -5458,6 +5459,16 @@ private fun BitChordApp(
                                     )
                                 } else {
                                     viewModel.openMoodGenre(category)
+                                }
+                            },
+                            onStationLongClick = { category ->
+                                val term = android.net.Uri.encode(category.title)
+                                val url = "https://music.apple.com/" +
+                                    "${AppleMusicCanvas.storefront}/search?term=$term"
+                                runCatching {
+                                    context.startActivity(
+                                        Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)),
+                                    )
                                 }
                             },
                             onGenresClick = { showGenres = true },
