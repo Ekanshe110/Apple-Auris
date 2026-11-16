@@ -58,6 +58,7 @@ fun AppleNewScreen(
     onItemClick: (ShelfItem) -> Unit,
     onExploreAll: () -> Unit,
     onRetry: () -> Unit,
+    showExploreList: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -126,6 +127,33 @@ fun AppleNewScreen(
                         }
                     }
                 }
+                item(key = "more") {
+                    Text(
+                        text = "More to Explore",
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 26.dp, bottom = 8.dp),
+                    )
+                }
+                items(MORE_TO_EXPLORE, key = { "explore:$it" }) { label ->
+                    Column(Modifier.padding(horizontal = 20.dp)) {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { onExploreAll() }
+                                .padding(vertical = 14.dp),
+                        ) {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.bodyLarge,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text("›", style = MaterialTheme.typography.titleMedium)
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    }
+                }
+            }
+            if (showExploreList) {
                 item(key = "more") {
                     Text(
                         text = "More to Explore",
