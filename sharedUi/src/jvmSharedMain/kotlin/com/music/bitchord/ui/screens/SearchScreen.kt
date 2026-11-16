@@ -56,6 +56,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -150,6 +151,8 @@ fun SearchScreen(
      * YouTube. The phone's top bar flips this; the desktop never does.
      */
     searchingLibrary: Boolean = false,
+    appleBrowse: Boolean = false,
+    onBrowseGenre: (String) -> Unit = {},
     /** The Library source's tracks for [query]; null while nothing is typed. */
     libraryResults: UiState<List<Song>>? = null,
     /** Files on the device are a running order to play through, not a station seed. */
@@ -284,7 +287,11 @@ fun SearchScreen(
                     }
                 }
                 results == null -> if (history.isEmpty()) {
-                    item { MessageState(stringResource(Res.string.search_empty)) }
+                    if (appleBrowse) {
+                        item { AppleGenreGrid(onBrowseGenre) }
+                    } else {
+                        item { MessageState(stringResource(Res.string.search_empty)) }
+                    }
                 } else {
                     recentSearches(
                         history = history,
@@ -379,6 +386,61 @@ fun SearchScreen(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+private val APPLE_GENRES = listOf(
+    "Bollywood", "Punjabi", "Tamil", "Telugu", "Pop", "Hip-Hop",
+    "Indie", "Classical", "Devotional", "Romance", "Chill", "Workout",
+)
+
+@Composable
+private fun AppleGenreGrid(onPick: (String) -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+    ) {
+        Text(
+            text = "Browse",
+            style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.padding(bottom = 10.dp),
+        )
+        APPLE_GENRES.chunked(2).forEach { row ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                row.forEach { genre ->
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(76.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(
+                                Brush.linearGradient(
+                                    listOf(
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.75f),
+                                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f),
+                                    ),
+                                ),
+                            )
+                            .clickable { onPick(genre) }
+                            .padding(12.dp),
+                        contentAlignment = Alignment.BottomStart,
+                    ) {
+                        Text(
+                            text = genre,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                        )
+                    }
+                }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
             }
         }
     }
