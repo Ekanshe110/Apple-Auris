@@ -1773,7 +1773,6 @@ private fun BitChordApp(
     val visibleTabDefs = tabDefs.filter { (tab, _) ->
         when (tab) {
             TAB_PODCASTS -> podcastsEnabled
-            TAB_NEW -> !podcastsEnabled
             else -> true
         }
     }
@@ -2989,7 +2988,8 @@ private fun BitChordApp(
                 add(TAB_HOME)
                 add(TAB_RADIO)
                 add(TAB_LIBRARY)
-                if (AppSettings.podcastsEnabled.value) add(TAB_PODCASTS) else add(TAB_NEW)
+                add(TAB_NEW)
+                if (AppSettings.podcastsEnabled.value) add(TAB_PODCASTS)
             },
         )
     }
