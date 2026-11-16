@@ -31,6 +31,21 @@ internal object AppleHomeSource {
         source.recommendationsResult(limit)
     }
 
+    /** Catalogue neighbours of one seed recording, for AutoPlay. */
+    suspend fun autoplay(seedId: String, limit: Int = 10): Result<List<Song>> =
+        withContext(Dispatchers.IO) {
+            if (seedId.isBlank() || limit <= 0) return@withContext Result.success(emptyList())
+            val config = SourceRegistry.appleRecommendationConfig()
+                ?: return@withContext Result.failure(
+                    IllegalStateException("Apple Music is not configured"),
+                )
+            val source = SourceRegistry.instance(config.id) as? AddonSource
+                ?: return@withContext Result.failure(
+                    IllegalStateException("Apple Music addon is unavailable"),
+                )
+            source.recommendationsResult(limit, seedId)
+        }
+
     /**
      * Apple Music's actual Home shelves, grouped the way Apple returned them.
      *

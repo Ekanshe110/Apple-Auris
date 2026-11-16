@@ -193,6 +193,8 @@ internal fun appleRecommendationPoolSize(limit: Int): Int = when {
  * re-hit the server for the same pool.
  */
 private suspend fun appleAutoplayPool(seed: Song, limit: Int): Result<List<Song>> {
+    val seedId = seed.appleCatalogId?.takeIf { it.isNotBlank() }
+        ?: return Result.success(emptyList())
     val seedKey = seed.videoId
     val now = System.currentTimeMillis()
     val cached = appleAutoplayCache[seedKey]
@@ -200,7 +202,7 @@ private suspend fun appleAutoplayPool(seed: Song, limit: Int): Result<List<Song>
         return Result.success(cached.songs)
     }
     return captureSourceFailure {
-        AppleHomeSource.tracks(appleRecommendationPoolSize(limit))
+        AppleHomeSource.autoplay(seedId, appleRecommendationPoolSize(limit))
     }.onSuccess { tracks ->
         appleAutoplayCache[seedKey] = AppleAutoplayCache(tracks, now)
     }
@@ -311,7 +313,15 @@ suspend fun loadAutoplayTracks(
             }
         }
         val apple = async {
-            if (!algorithm.includes(RecommendationAlgorithm.APPLE)) return@async emptyList<Song>()
+            // An Apple-backed song has an exact catalogue id, so its seeded
+            // neighbours are the right answer even when discovery is set to
+            // YouTube or Spotify. Only a non-Apple song falls back to the
+            // selected algorithm's own feed.
+            if (!algorithm.includes(RecommendationAlgorithm.APPLE) &&
+                seedSong.appleCatalogId.isNullOrBlank()
+            ) {
+                return@async emptyList<Song>()
+            }
             appleAutoplayPool(seedSong, candidateLimit).getOrElse {
                 sourceFailures += it
                 emptyList()
