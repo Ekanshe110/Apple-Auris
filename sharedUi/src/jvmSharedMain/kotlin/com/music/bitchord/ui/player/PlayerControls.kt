@@ -392,12 +392,7 @@ internal fun PlaybackQualityLabel(
         (nerdStats?.isDolbyAtmos == true ||
             (song.atmosAvailable && nerdStats?.isLossless == true))
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
-        LosslessOrStats(
-            isLoading = isLoading,
-            stillRacing = song.videoId in racingLossless,
-            losslessRequested = losslessRequested,
-            effectiveQuality = effectiveQuality,
-            nerdStats = nerdStats,
+        Row(
             modifier = Modifier.then(
                 if (renditionSwitchable) {
                     Modifier.combinedClickable(
@@ -412,7 +407,25 @@ internal fun PlaybackQualityLabel(
                     Modifier.clickable(enabled = nerdStats != null) { details = true }
                 },
             ),
-        )
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            LosslessOrStats(
+                isLoading = isLoading,
+                stillRacing = song.videoId in racingLossless,
+                losslessRequested = losslessRequested,
+                effectiveQuality = effectiveQuality,
+                nerdStats = nerdStats,
+                modifier = Modifier,
+            )
+            if (renditionSwitchable) {
+                Text(
+                    text = "›",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 2.dp),
+                )
+            }
+        }
         val measured = nerdStats
         if (details && measured != null) {
             Popup(
