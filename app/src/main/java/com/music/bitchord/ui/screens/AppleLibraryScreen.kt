@@ -20,6 +20,10 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -84,6 +88,8 @@ fun AppleLibraryScreen(
     val state by scope.state.collectAsStateWithLifecycle()
     val activeListState = if (detailId == null) listState else detailListState
     val coroutineScope = rememberCoroutineScope()
+    var sortMenuOpen by remember { mutableStateOf(false) }
+    var sort by remember { mutableStateOf(AppleLibrarySort.DEFAULT) }
 
     // Reset detail scroll when opening a different detail.
     LaunchedEffect(detailId) {
@@ -158,6 +164,7 @@ fun AppleLibraryScreen(
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 AppleLibraryCollection.entries.forEachIndexed { index, item ->
                     TextButton(
@@ -165,6 +172,27 @@ fun AppleLibraryScreen(
                         enabled = !state.loading,
                     ) {
                         Text(item.label)
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = { coroutineScope.launch { scope.open(config) } }) {
+                    Icon(Icons.Rounded.Refresh, contentDescription = "Reload")
+                }
+                IconButton(onClick = { sortMenuOpen = true }) {
+                    Icon(Icons.Rounded.Sort, contentDescription = "Sort")
+                }
+                DropdownMenu(
+                    expanded = sortMenuOpen,
+                    onDismissRequest = { sortMenuOpen = false },
+                ) {
+                    AppleLibrarySort.entries.forEach { option ->
+                        DropdownMenuItem(
+                            text = { Text(option.label) },
+                            onClick = {
+                                sort = option
+                                sortMenuOpen = false
+                            },
+                        )
                     }
                 }
             }
@@ -200,10 +228,17 @@ fun AppleLibraryScreen(
         }
 
         if (state.items.isNotEmpty()) {
+            val shownItems = remember(state.items, sort) {
+                when (sort) {
+                    AppleLibrarySort.TITLE -> state.items.sortedBy { it.title.lowercase() }
+                    AppleLibrarySort.ARTIST -> state.items.sortedBy { it.artist.lowercase() }
+                    AppleLibrarySort.DEFAULT -> state.items
+                }
+            }
             itemsIndexed(
-                items = state.items,
+                items = shownItems,
                 key = { index, item ->
-                    "${collection.routeName}:${detailId.orEmpty()}:${occurrenceKey(state.items, index)}"
+                    "${collection.routeName}:${detailId.orEmpty()}:${occurrenceKey(shownItems, index)}"
                 },
             ) { _, item ->
                 val playable = detailId != null || collection == AppleLibraryCollection.SONGS ||
@@ -314,4 +349,10 @@ private fun LibraryRow(
             }
         }
     }
+}
+
+private enum class AppleLibrarySort(val label: String) {
+    DEFAULT("Default"),
+    TITLE("Title"),
+    ARTIST("Artist"),
 }

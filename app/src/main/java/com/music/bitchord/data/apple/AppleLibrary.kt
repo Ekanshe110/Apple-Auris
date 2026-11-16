@@ -14,10 +14,10 @@ import java.util.Locale
 
 /** The account-library collections exposed by the Apple addon contract. */
 enum class AppleLibraryCollection(val routeName: String, val label: String) {
+    LIKED("liked", "Liked"),
     PLAYLISTS("playlists", "Playlists"),
     ALBUMS("albums", "Albums"),
     SONGS("songs", "Songs"),
-    LIKED("liked", "Liked"),
 }
 
 /** The state of one Apple library page. These outcomes are deliberately distinct. */
