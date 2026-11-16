@@ -1896,10 +1896,15 @@ object AppSettings {
         // is the honest place for it.
         val actuallyUp = {
             runCatching {
-                val network = manager.activeNetwork ?: return@runCatching false
-                val capabilities = manager.getNetworkCapabilities(network)
-                    ?: return@runCatching false
-                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                // Any connected network counts, not just activeNetwork. Some
+                // OEM 5G stacks leave the active one null or unvalidated while
+                // a working network is right there; asking only the active
+                // one is what produced "offline mode" on a live connection.
+                // INTERNET, not VALIDATED, for the same reason.
+                manager.allNetworks.any { network ->
+                    manager.getNetworkCapabilities(network)
+                        ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+                }
             }.getOrDefault(false)
         }
 
@@ -1940,7 +1945,7 @@ object AppSettings {
                             // cannot leave the app refusing every request for the rest
                             // of the session.
                             while (isActive) {
-                                delay(15_000)
+                                delay(5_000)
                                 if (actuallyUp()) {
                                     markStreaming()
                                     break
