@@ -6677,6 +6677,11 @@ private fun BitChordApp(
                 FolderPickerSheet(
                     folders = localPlaylists.filter { it.isFolder },
                     startCreating = target == null,
+                    initialApple = AppSettings.lastApplePlaylistId() != null &&
+                        target?.appleCatalogId != null &&
+                        appleTargetConfig != null,
+                    initialLocalIds = AppSettings.lastFolderId()?.let(::setOf).orEmpty(),
+                    initialAppleIds = AppSettings.lastApplePlaylistId()?.let(::setOf).orEmpty(),
                     applePlaylists = if (
                         target?.appleCatalogId != null && appleTargetConfig != null
                     ) applePlaylists else null,
@@ -6684,6 +6689,7 @@ private fun BitChordApp(
                         val song = target
                         val config = appleTargetConfig
                         if (song != null && config != null && picked.isNotEmpty()) {
+                            AppSettings.rememberLastApplePlaylist(picked.first().id)
                             scope.launch {
                                 viewModel.addToApplePlaylists(
                                     config = config,
@@ -6710,6 +6716,7 @@ private fun BitChordApp(
                     },
                     onAdd = { picked ->
                         target?.let { song ->
+                            picked.firstOrNull()?.let { AppSettings.rememberLastFolder(it.id) }
                             var added = 0
                             var alreadyThere = 0
                             var firstName = ""
