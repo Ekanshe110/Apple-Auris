@@ -36,6 +36,7 @@ import com.music.bitchord.data.spotify.SPOTIFY_PAGE_PREFIX
 import com.music.bitchord.data.spotify.SpotifyPages
 import com.music.bitchord.data.spotify.SpotifyImporter
 import com.music.bitchord.data.spotify.SpotifyLibrary
+import com.music.bitchord.data.spotify.SpotifyPlaylist
 import com.music.bitchord.data.spotify.SpotifyTrack
 import com.music.bitchord.data.lyrics.EmbeddedLyrics
 import com.music.bitchord.data.lyrics.LyricLine
@@ -1161,6 +1162,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _applePlaylists = MutableStateFlow<UiState<List<AddonLibraryItem>>>(UiState.Success(emptyList()))
     val applePlaylists: StateFlow<UiState<List<AddonLibraryItem>>> = _applePlaylists.asStateFlow()
 
+    private val _spotifyPlaylists = MutableStateFlow<List<SpotifyPlaylist>>(emptyList())
+
     fun loadApplePlaylists(config: com.music.bitchord.data.sources.SourceConfig) {
         viewModelScope.launch {
             _applePlaylists.value = UiState.Loading
@@ -1178,11 +1181,37 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     val library: StateFlow<UiState<LibraryPage>> =
-        combine(_library, AppleLikedStore.items, _applePlaylists) { accountLibrary, appleItems, applePlaylists ->
-            AppleLikedStore.mergeIntoLibrary(
+        combine(
+            _library,
+            AppleLikedStore.items,
+            _applePlaylists,
+            _spotifyPlaylists,
+        ) { accountLibrary, appleItems, applePlaylists, spotifyPlaylists ->
+            val merged = AppleLikedStore.mergeIntoLibrary(
                 accountLibrary,
                 appleItems,
                 (applePlaylists as? UiState.Success)?.data.orEmpty(),
+            )
+            val page = (merged as? UiState.Success)?.data ?: return@combine merged
+            if (spotifyPlaylists.isEmpty()) return@combine merged
+            val shelf = HomeShelf(
+                title = "Spotify Playlists",
+                items = spotifyPlaylists.map { playlist ->
+                    ShelfItem(
+                        title = playlist.name,
+                        subtitle = playlist.owner.orEmpty(),
+                        thumbnailUrl = playlist.imageUrl,
+                        videoId = null,
+                        browseId = SPOTIFY_PAGE_PREFIX + playlist.id,
+                    )
+                },
+            )
+            UiState.Success(
+                page.copy(
+                    shelves = listOf(shelf) + page.shelves.filterNot {
+                        it.title == shelf.title
+                    },
+                ),
             )
         }.stateIn(viewModelScope, SharingStarted.Eagerly, UiState.Loading)
 
@@ -2259,6 +2288,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 setSearchSource(defaultSearchSource(provider))
                 if (provider == HomeProvider.APPLE) {
                     SourceRegistry.appleCatalogConfig()?.let(::loadApplePlaylists)
+                }
+                if (provider == HomeProvider.SPOTIFY) {
+                    viewModelScope.launch {
+                        _spotifyPlaylists.value = runCatching {
+                            SpotifyLibrary.playlists()
+                        }.getOrDefault(emptyList())
+                    }
                 }
             }
         }
