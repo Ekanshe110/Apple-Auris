@@ -3867,10 +3867,20 @@ object AudioCache {
         // more than any gap between two tracks, and the rest streams live as
         // the track plays — at the rate the player needs it, with nothing else
         // asking for the same bytes.
+        // On a metered link the fill competes with the song already playing.
+        // Eight megabytes of a lossless master is a minute of audio pulled at
+        // full speed for a hand-over that needs twenty seconds; two is enough
+        // there and leaves the rest of the link to the current track. Wi-Fi
+        // keeps the larger window.
+        val cap = if (AppSettings.meteredConnection.value == true) {
+            2L * 1024 * 1024
+        } else {
+            MAX_SOURCE_PREFETCH_BYTES
+        }
         var position = 0L
-        while (position < minOf(total, MAX_SOURCE_PREFETCH_BYTES)) {
+        while (position < minOf(total, cap)) {
             if (pendingQueue.firstOrNull() != mediaId) return
-            val length = minOf(CHUNK_BYTES, minOf(total, MAX_SOURCE_PREFETCH_BYTES) - position)
+            val length = minOf(CHUNK_BYTES, minOf(total, cap) - position)
             if (cache.getCachedBytes(key, position, length) < length) {
                 fetch(key, uri, position, length, pinKey = true)
                 // Written nowhere means another writer owns the entry — the
