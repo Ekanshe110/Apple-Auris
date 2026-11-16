@@ -1887,16 +1887,17 @@ object AppSettings {
         // with no internet behind it — the router is up, the line is down —
         // keeps `activeNetwork` non-null, and a verdict that only asks "is
         // there a network" calls that online. Streams then fail one by one
-        // while the detector insists it is fine. The system's own probe is the
-        // answer: VALIDATED is set only after it got an answer from the
-        // internet, so a captive portal and a dead line both read as offline.
+        // while the detector insists it is fine. INTERNET is the honest floor:
+        // several 5G carriers and VPNs never set VALIDATED even though every
+        // request works, so requiring it turned a live connection into
+        // "offline mode". A captive portal still fails at request time, which
+        // is the honest place for it.
         val actuallyUp = {
             runCatching {
                 val network = manager.activeNetwork ?: return@runCatching false
                 val capabilities = manager.getNetworkCapabilities(network)
                     ?: return@runCatching false
-                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             }.getOrDefault(false)
         }
 
