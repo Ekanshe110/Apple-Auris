@@ -274,6 +274,21 @@ data class AddonSearchResponse(
     @SerialName("tracks") val tracks: List<AddonTrack> = emptyList(),
 )
 
+/** Album, playlist and artist rows from an addon's browse search. */
+@Serializable
+data class AddonBrowseResponse(
+    @SerialName("items") val items: List<AddonBrowseItem> = emptyList(),
+)
+
+@Serializable
+data class AddonBrowseItem(
+    @SerialName("type") val type: String = "",
+    @SerialName("id") val id: String = "",
+    @SerialName("title") val title: String = "",
+    @SerialName("artist") val artist: String = "",
+    @SerialName("artworkURL") val artworkURL: String? = null,
+)
+
 /** A recommendation feed returned by an addon's optional `/recommendations` route. */
 @Serializable
 data class AddonRecommendationsResponse(

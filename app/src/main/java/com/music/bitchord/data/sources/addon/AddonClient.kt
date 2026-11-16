@@ -444,6 +444,29 @@ class AddonClient(
     }
 
     /**
+     * Album, playlist and artist rows for the same query.
+     *
+     * Separate from [search] because the two answer different shapes: this
+     * one is browse cards, not playable tracks.
+     */
+    suspend fun searchBrowse(
+        query: String,
+        types: String = "albums,playlists,artists",
+        limit: Int = 10,
+    ): Result<List<AddonBrowseItem>> {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty() || limit <= 0) return Result.success(emptyList())
+        val params = mapOf(
+            "q" to trimmed,
+            "types" to types,
+            "limit" to limit.coerceAtMost(25).toString(),
+        )
+        return fetch<AddonBrowseResponse>(
+            endpoint(listOf("search", "browse"), params),
+        ).map { it.items }
+    }
+
+    /**
      * The addon's own recommendation feed.
      *
      * Optional route used only by discovery. Playback still resolves every
