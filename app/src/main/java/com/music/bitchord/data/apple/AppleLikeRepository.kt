@@ -38,6 +38,19 @@ object AppleLikeRepository {
         return client.libraryAddToPlaylist(playlistId, appleId)
     }
 
+    /** Remove [song] from one Apple Music library playlist. */
+    suspend fun removeFromPlaylist(
+        config: SourceConfig,
+        playlistId: String,
+        song: Song,
+    ): Result<Unit> {
+        val appleId = song.appleCatalogId?.takeIf { it.isNotBlank() }
+            ?: return Result.failure(IllegalArgumentException("Song has no Apple catalog id"))
+        val client = AppleLibraryStore.repository(config).clientOrNull()
+            ?: return Result.failure(IllegalStateException("Apple Music source is not available"))
+        return client.libraryRemoveFromPlaylist(playlistId, appleId)
+    }
+
     /** The currently configured Apple Music source, if any. */
     fun activeConfig(): SourceConfig? = SourceRegistry.appleCatalogConfig()
 }

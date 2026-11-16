@@ -272,6 +272,26 @@ class AddonClient(
         )
     }
 
+    /** Remove a catalog song from one of the user's Apple Music library playlists. */
+    suspend fun libraryRemoveFromPlaylist(
+        playlistId: String,
+        songId: String,
+    ): Result<Unit> = runCatching {
+        val manifest = manifest().getOrElse { throw it }
+        val capability = manifest.library
+            ?: throw AddonUnsupportedException("This addon does not advertise library support")
+        if (!manifest.isAppleMusicCatalog) {
+            throw AddonUnsupportedException("This addon does not identify as an Apple Music catalogue")
+        }
+        val headers = libraryHeaders(capability).getOrElse { throw it }
+        val encodedPlaylist = URLEncoder.encode(playlistId, "UTF-8")
+        deleteBody(
+            url = "$baseUrl/library/playlists/$encodedPlaylist/tracks",
+            headers = headers,
+            body = "{\"ids\":[\"$songId\"]}",
+        )
+    }
+
     /** A page from any library collection declared by the manifest. */
     suspend fun libraryCollection(
         collection: String,
@@ -872,6 +892,39 @@ class AddonClient(
         }
         @Suppress("UNREACHABLE_CODE")
         throw AddonException("unreachable")
+    }
+
+    private suspend fun deleteBody(
+        url: String,
+        headers: Map<String, String> = emptyMap(),
+        body: String,
+    ): String = withContext(Dispatchers.IO) {
+        var attempt = 0
+        while (true) {
+            (quietUntilMs - System.currentTimeMillis()).takeIf { it > 0 }?.let { delay(it) }
+            val requestBody = body.toRequestBody(JSON_MEDIA_TYPE)
+            val request = Request.Builder().url(url)
+                .delete(requestBody)
+                .header("Accept", "application/json")
+                .header("User-Agent", USER_AGENT)
+                .apply { headers.forEach { (name, value) -> header(name, value) } }
+                .build()
+            val wait = client.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string().orEmpty()
+                when {
+                    response.isSuccessful -> return@withContext responseBody
+                    response.code == 429 -> response.header("Retry-After")?.toLongOrNull()
+                        ?.times(1_000L)
+                    response.code in 500..599 && attempt++ < 2 -> 500L
+                    else -> throw AddonException(
+                        "Addon returned ${response.code} ${response.message}",
+                    )
+                }
+            }
+            delay(wait ?: 1_000L)
+        }
+        @Suppress("UNREACHABLE_CODE")
+        ""
     }
 
     /** Read a machine-readable error without requiring the error document to be well formed. */
