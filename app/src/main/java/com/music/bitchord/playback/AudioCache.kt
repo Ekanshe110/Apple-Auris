@@ -1394,12 +1394,18 @@ object AudioCache {
      * is left alone, and a different one replaces it outright, since on a run
      * of skips only wherever the listener actually lands is worth chasing.
      */
-    fun prefetchQueue(upcoming: List<Upcoming>) {
+    fun prefetchQueue(upcoming: List<Upcoming>, currentMediaId: String? = null) {
         val mediaIds = upcoming.map { it.mediaId }
         if (mediaIds == pendingQueue) return
         android.util.Log.d("BCFetchDebug", "prefetchQueue: head ${pendingQueue.firstOrNull()} -> ${mediaIds.firstOrNull()}")
+        val previousHead = pendingQueue.firstOrNull()
         pendingQueue = mediaIds
-        job?.cancel()
+        // A skip turns the old head into the track the player is opening right
+        // now. Cancelling its job threw away the opening fetch at the exact
+        // moment playback needed those bytes; the job stops by itself once
+        // pendingQueue no longer names that track, and the rest of its pass is
+        // guarded per chunk.
+        if (previousHead != currentMediaId) job?.cancel()
         prepareDownloadedHead(upcoming)
         // YouTube's half of read-ahead speaks [StreamResolver]'s language and
         // nothing else, so its id list is separate. The track chosen for the

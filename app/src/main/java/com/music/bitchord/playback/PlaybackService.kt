@@ -7755,7 +7755,7 @@ class PlaybackService : MediaLibraryService() {
         val songs = items.map { it.toSong() }
         AudioCache.noteSongs(songs)
         AudioCache.prefetchQueue(
-            items.map { item ->
+            upcoming = items.map { item ->
                 // The title, artist and runtime the item was built with —
                 // see [Song.toMediaItem]. Read from the queued item because
                 // read-ahead has no other way to reach this metadata.
@@ -7770,6 +7770,7 @@ class PlaybackService : MediaLibraryService() {
                     durationMs = item.claimedDurationMs(),
                 )
             },
+            currentMediaId = player.currentMediaItem?.mediaId,
         )
     }
 
@@ -11299,7 +11300,7 @@ class PlaybackService : MediaLibraryService() {
         const val BACK_BUFFER_MS = 30 * 1000
 
         /** Enough to cover the decoder's own latency, not seconds of dead air. */
-        const val START_PLAYBACK_MS = 500
+        const val START_PLAYBACK_MS = 250
 
         /** More room after a stall than at the start — see the load control. */
         const val RESUME_PLAYBACK_MS = 2_000
