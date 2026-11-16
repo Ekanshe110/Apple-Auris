@@ -684,10 +684,14 @@ internal fun visibleSearchSources(provider: HomeProvider): List<SearchSource> {
         HomeProvider.SPOTIFY -> SearchSource.SPOTIFY
         HomeProvider.YOUTUBE -> SearchSource.YOUTUBE
     }
+    val appleAvailable = provider == HomeProvider.APPLE
     return buildList {
         add(preferred)
         SearchSource.entries
-            .filter { it != preferred && it != SearchSource.LIBRARY }
+            .filter {
+                it != preferred && it != SearchSource.LIBRARY &&
+                    (it != SearchSource.APPLE || appleAvailable)
+            }
             .forEach(::add)
         add(SearchSource.LIBRARY)
     }

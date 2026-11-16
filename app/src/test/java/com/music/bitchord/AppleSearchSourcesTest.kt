@@ -1,5 +1,6 @@
 package com.music.bitchord
 
+import com.music.bitchord.data.settings.HomeProvider
 import com.music.bitchord.ui.SearchSource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -9,30 +10,30 @@ import org.junit.Test
 class AppleSearchSourcesTest {
 
     @Test
-    fun `Apple mode adds Apple without displacing other catalogues`() {
-        val sources = visibleSearchSources(appleModeEnabled = true)
+    fun `Apple provider leads and library stays last`() {
+        val sources = visibleSearchSources(HomeProvider.APPLE)
 
+        assertEquals(SearchSource.APPLE, sources.first())
+        assertEquals(SearchSource.LIBRARY, sources.last())
         assertTrue(SearchSource.YOUTUBE in sources)
         assertTrue(SearchSource.SPOTIFY in sources)
-        assertTrue(SearchSource.LIBRARY in sources)
-        assertTrue(SearchSource.APPLE in sources)
     }
 
     @Test
-    fun `Apple mode off keeps YouTube and Spotify available`() {
-        val sources = visibleSearchSources(appleModeEnabled = false)
+    fun `YouTube provider leads without an Apple chip`() {
+        val sources = visibleSearchSources(HomeProvider.YOUTUBE)
 
-        assertTrue(SearchSource.YOUTUBE in sources)
-        assertTrue(SearchSource.SPOTIFY in sources)
-        assertTrue(SearchSource.LIBRARY in sources)
+        assertEquals(SearchSource.YOUTUBE, sources.first())
+        assertEquals(SearchSource.LIBRARY, sources.last())
         assertFalse(SearchSource.APPLE in sources)
     }
 
     @Test
-    fun `source order is stable when Apple mode changes`() {
-        assertEquals(
-            visibleSearchSources(appleModeEnabled = false).take(3),
-            visibleSearchSources(appleModeEnabled = true).take(3),
-        )
+    fun `Spotify provider leads without an Apple chip`() {
+        val sources = visibleSearchSources(HomeProvider.SPOTIFY)
+
+        assertEquals(SearchSource.SPOTIFY, sources.first())
+        assertEquals(SearchSource.LIBRARY, sources.last())
+        assertFalse(SearchSource.APPLE in sources)
     }
 }
