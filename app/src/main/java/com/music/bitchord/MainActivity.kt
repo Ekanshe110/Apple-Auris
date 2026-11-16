@@ -2696,9 +2696,15 @@ private fun BitChordApp(
      * downstream read.
      */
     val shelfSong: (ShelfItem) -> Song? = { item ->
-        item.videoId?.let { videoId ->
+        val appleId = item.appleCatalogId?.takeIf { it.isNotBlank() }
+        val videoId = if (appleId != null) {
+            appleCatalogConfig?.let { SourceRegistry.trackKey(it.id, appleId) } ?: item.videoId
+        } else {
+            item.videoId
+        }
+        videoId?.let { id ->
             Song(
-                videoId = videoId,
+                videoId = id,
                 title = item.title,
                 artist = InnertubeParser.artistFromSubtitle(item.subtitle),
                 thumbnailUrl = item.thumbnailUrl,
@@ -2706,7 +2712,7 @@ private fun BitChordApp(
                 isExplicit = item.isExplicit,
                 contentRating = item.contentRating,
                 isrc = item.isrc,
-                appleCatalogId = item.appleCatalogId,
+                appleCatalogId = appleId ?: item.appleCatalogId,
                 appleLookupError = item.appleLookupError,
             )
         }
