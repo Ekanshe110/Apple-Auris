@@ -3007,7 +3007,7 @@ private fun BitChordApp(
         onToggleSource = {
             // Cycle only through the sources currently offered. Apple is
             // additive and never displaces Spotify.
-            val currentSources = visibleSearchSources(applePageState.homeProvider)
+            val currentSources = visibleSearchSources(homeProvider)
             onSearchSourceChange(
                 currentSources[
                     (currentSources.indexOf(searchSource) + 1)
