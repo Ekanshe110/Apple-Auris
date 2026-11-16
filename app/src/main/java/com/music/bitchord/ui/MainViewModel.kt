@@ -3880,10 +3880,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // query has been run before, otherwise the closest earlier
                 // one. Only fall back to a spinner with neither.
                 val exact = searchCache.get(key)
-                val exactUnavailable = exact != null && appleCatalogueMatchUnavailable(
-                    rows = exact.rows,
-                    appleModeEnabled = AppSettings.appleRichModeEnabled,
-                )
+                val exactUnavailable = exact != null &&
+                    request.source == SearchSource.APPLE &&
+                    appleCatalogueMatchUnavailable(
+                        rows = exact.rows,
+                        appleModeEnabled = AppSettings.appleRichModeEnabled,
+                    )
                 val prefix = if (exact == null) {
                     prefixMatch(request.query, request.filter, request.source)
                 } else {
@@ -3891,10 +3893,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 val cached = when {
                     exact != null && !exactUnavailable -> exact.rows
-                    prefix != null && !appleCatalogueMatchUnavailable(
-                            rows = prefix,
-                            appleModeEnabled = AppSettings.appleRichModeEnabled,
-                        ) -> prefix
+                    prefix != null && (
+                        request.source != SearchSource.APPLE ||
+                            !appleCatalogueMatchUnavailable(
+                                rows = prefix,
+                                appleModeEnabled = AppSettings.appleRichModeEnabled,
+                            )
+                    ) -> prefix
                     else -> null
                 }
                 _results.value = when {
@@ -4246,7 +4251,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // provider it came from. A discovery row without an exact catalogue id
         // must not be drawn as if it were playable and then fall back to a
         // title-matched YouTube recording later.
-        if (appleCatalogueMatchUnavailable(
+        if (source == SearchSource.APPLE &&
+            appleCatalogueMatchUnavailable(
                 rows = clean,
                 appleModeEnabled = AppSettings.appleRichModeEnabled,
             )
