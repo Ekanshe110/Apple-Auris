@@ -1438,7 +1438,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // useful for an offline-only listener.
                 return@launch
             }
-            AppleLikeRepository.setLiked(config, song, targetLiked).onFailure { failure ->
+            val rated = AppleLikeRepository.setLiked(config, song, targetLiked)
+            if (!targetLiked) {
+                AppleLikeRepository.removeFromFavorites(config, song)
+            }
+            rated.onFailure { failure ->
                 // Roll back the optimistic change.
                 LikeState.set(
                     videoId,
