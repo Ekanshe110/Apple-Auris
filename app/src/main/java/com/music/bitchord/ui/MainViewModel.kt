@@ -4246,20 +4246,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         source: SearchSource,
     ): UiState<List<SearchResult>> {
         val clean = enrichSearchRows(rows).withoutBlockedArtists()
-        if (clean.isEmpty()) return UiState.Error(text(R.string.no_results))
+        val deduped = clean.distinctBy { row ->
+            when (row) {
+                is SearchResult.TopTrack -> searchSongKey(row.song)
+                is SearchResult.Track -> searchSongKey(row.song)
+                is SearchResult.Browse -> "b:${row.item.browseId}"
+            }
+        }
+        if (deduped.isEmpty()) return UiState.Error(text(R.string.no_results))
         // Apple mode is strict about the recording, not merely about the
         // provider it came from. A discovery row without an exact catalogue id
         // must not be drawn as if it were playable and then fall back to a
         // title-matched YouTube recording later.
         if (source == SearchSource.APPLE &&
             appleCatalogueMatchUnavailable(
-                rows = clean,
+                rows = deduped,
                 appleModeEnabled = AppSettings.appleRichModeEnabled,
             )
         ) {
             return UiState.Error(APPLE_CATALOGUE_MATCH_UNAVAILABLE)
         }
-        searchCache.put(key, SearchCacheEntry(clean, continuation, nextOffset))
+        searchCache.put(key, SearchCacheEntry(deduped, continuation, nextOffset))
         searchSession = SearchSession(
             key = key,
             requestId = requestId,
@@ -4269,8 +4276,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             source = source,
             query = _query.value.trim(),
         )
-        prefetchTopResult(clean)
-        return UiState.Success(clean)
+        prefetchTopResult(deduped)
+        return UiState.Success(deduped)
     }
 
     /**
@@ -4298,6 +4305,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    /**
+     * One recording's identity for the results list.
+     *
+     * ISRC when the row carries one, otherwise title, artist and runtime.
+     * Runtime is part of the key so a live cut and a studio cut of the same
+     * title are not collapsed into one row.
+     */
+    private fun searchSongKey(song: Song): String =
+        song.isrc?.trim()?.takeIf { it.isNotEmpty() }?.lowercase()
+            ?: listOf(
+                song.title.trim().lowercase(),
+                song.artist.trim().lowercase(),
+                song.durationText.orEmpty(),
+            ).joinToString("|")
 
     private fun searchResultKey(row: SearchResult): String = when (row) {
         is SearchResult.TopTrack -> "v:${row.song.videoId}"
