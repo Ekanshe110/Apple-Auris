@@ -1230,7 +1230,11 @@ private fun BitChordApp(
     // Apple mode owns the Search catalogue even before an addon is configured.
     // A missing configuration is then an explicit search error, not a silent
     // return to YouTube and not a reason to hide the Apple source.
-    val appleModeEnabled = homeProvider == HomeProvider.APPLE
+    val uiProvider by AppSettings.uiProvider.collectAsStateWithLifecycle()
+    // The skin follows the UI choice. Audio, metadata and playback identity
+    // still follow homeProvider; Apple strict helpers use
+    // AppSettings.appleRichModeEnabled directly.
+    val appleModeEnabled = uiProvider == HomeProvider.APPLE
     val appleCatalogConfigs by SourceRegistry.configs.collectAsStateWithLifecycle()
     val appleCatalogConfig = remember(appleCatalogConfigs, homeProvider) {
         appleCatalogConfigs.firstOrNull {
