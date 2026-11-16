@@ -18,8 +18,10 @@ object AppleCatalogRepository {
         id: String,
         limit: Int = 100,
     ): Result<List<Song>> {
-        if (collection != "albums" && collection != "playlists") {
-            return Result.failure(IllegalArgumentException("collection must be albums or playlists"))
+        if (collection !in setOf("albums", "playlists", "artists")) {
+            return Result.failure(
+                IllegalArgumentException("collection must be albums, playlists or artists"),
+            )
         }
         val client = AppleLibraryStore.repository(config).clientOrNull()
             ?: return Result.failure(IllegalStateException("Apple Music source is not available"))

@@ -517,8 +517,10 @@ class AddonClient(
         id: String,
         limit: Int = 100,
     ): Result<List<AddonTrack>> {
-        if (collection != "albums" && collection != "playlists") {
-            return Result.failure(IllegalArgumentException("collection must be albums or playlists"))
+        if (collection !in setOf("albums", "playlists", "artists")) {
+            return Result.failure(
+                IllegalArgumentException("collection must be albums, playlists or artists"),
+            )
         }
         val encoded = URLEncoder.encode(id, "UTF-8")
         val params = mapOf("limit" to limit.coerceAtMost(100).toString())
