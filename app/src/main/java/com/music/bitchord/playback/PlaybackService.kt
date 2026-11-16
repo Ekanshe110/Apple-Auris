@@ -4164,6 +4164,15 @@ class PlaybackService : MediaLibraryService() {
         // press before that steps to the previous one.
         .setMaxSeekToPreviousPositionMs(BACK_RESTARTS_AFTER_MS)
         .build()
+        // Preload the next queue item, not just its bytes. Without this the
+        // player only starts resolving item N+1 after item N ends, which was
+        // the 2.1 s auto-advance in the field log. One second of target is
+        // ~210 kB of a 24/48 ALAC and buys the hand-over.
+        .also {
+            it.setPreloadConfiguration(
+                ExoPlayer.PreloadConfiguration(PRELOAD_NEXT_US),
+            )
+        }
 
     /**
      * Moves the session onto the player the crossfade has just started the
@@ -11301,6 +11310,9 @@ class PlaybackService : MediaLibraryService() {
 
         /** Enough to cover the decoder's own latency, not seconds of dead air. */
         const val START_PLAYBACK_MS = 250
+
+        /** Audio the player keeps ready for the next queue item. */
+        private const val PRELOAD_NEXT_US = 1_000_000L
 
         /** More room after a stall than at the start — see the load control. */
         const val RESUME_PLAYBACK_MS = 2_000
