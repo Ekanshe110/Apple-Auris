@@ -151,6 +151,12 @@ fun SearchScreen(
      * YouTube. The phone's top bar flips this; the desktop never does.
      */
     searchingLibrary: Boolean = false,
+    /**
+     * What to say before anything is typed, when the source is not YouTube.
+     * The default line names YouTube Music, which is wrong under the Spotify
+     * source: the catalogue being searched is Spotify's.
+     */
+    emptyMessage: String? = null,
     appleBrowse: Boolean = false,
     onBrowseGenre: (String) -> Unit = {},
     /** The Library source's tracks for [query]; null while nothing is typed. */
@@ -290,7 +296,7 @@ fun SearchScreen(
                     if (appleBrowse) {
                         item { AppleGenreGrid(onBrowseGenre) }
                     } else {
-                        item { MessageState(stringResource(Res.string.search_empty)) }
+                        item { MessageState(emptyMessage ?: stringResource(Res.string.search_empty)) }
                     }
                 } else {
                     recentSearches(
