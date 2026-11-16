@@ -1882,6 +1882,7 @@ object AppSettings {
     private fun watchConnection(context: Context) {
         val manager = context.getSystemService(ConnectivityManager::class.java) ?: return
         var pendingCheck: Job? = null
+        var recoveryCheck: Job? = null
 
         // A connected network is not the same thing as a working one. Wi-Fi
         // with no internet behind it — the router is up, the line is down —
@@ -1916,6 +1917,8 @@ object AppSettings {
         val markStreaming = {
             pendingCheck?.cancel()
             pendingCheck = null
+            recoveryCheck?.cancel()
+            recoveryCheck = null
             streamingAvailableFlow.value = true
         }
 
@@ -1926,7 +1929,24 @@ object AppSettings {
                 pendingCheck?.cancel()
                 pendingCheck = networkScope.launch {
                     delay(NETWORK_LOST_GRACE_MS)
-                    if (!actuallyUp()) streamingAvailableFlow.value = false
+                    if (!actuallyUp()) {
+                        streamingAvailableFlow.value = false
+                        recoveryCheck?.cancel()
+                        recoveryCheck = networkScope.launch {
+                            // A DNS or route failure can outlive the interface, and the
+                            // system only calls back when the network itself changes.
+                            // While offline, re-ask the interface so a transient outage
+                            // cannot leave the app refusing every request for the rest
+                            // of the session.
+                            while (isActive) {
+                                delay(15_000)
+                                if (actuallyUp()) {
+                                    markStreaming()
+                                    break
+                                }
+                            }
+                        }
+                    }
                     pendingCheck = null
                 }
             }
