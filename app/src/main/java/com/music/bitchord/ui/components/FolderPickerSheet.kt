@@ -75,13 +75,20 @@ fun FolderPickerSheet(
     onCreate: (String) -> Unit,
     modifier: Modifier = Modifier,
     startCreating: Boolean = false,
+    initialApple: Boolean = false,
+    initialLocalIds: Set<String> = emptySet(),
+    initialAppleIds: Set<String> = emptySet(),
     applePlaylists: UiState<List<AddonLibraryItem>>? = null,
     onAddToApple: (List<AddonLibraryItem>) -> Unit = {},
 ) {
     var creating by remember { mutableStateOf(startCreating) }
-    var destination by remember { mutableStateOf(FolderPickerDestination.LOCAL) }
-    var selected by remember { mutableStateOf(emptySet<String>()) }
-    var selectedApple by remember { mutableStateOf(emptySet<String>()) }
+    var destination by remember {
+        mutableStateOf(
+            if (initialApple) FolderPickerDestination.APPLE else FolderPickerDestination.LOCAL,
+        )
+    }
+    var selected by remember { mutableStateOf(initialLocalIds) }
+    var selectedApple by remember { mutableStateOf(initialAppleIds) }
 
     if (creating) {
         NewFolderForm(
