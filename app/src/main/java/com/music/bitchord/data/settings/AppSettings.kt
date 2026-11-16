@@ -755,7 +755,7 @@ object AppSettings {
      * The switch is there for the listener who never wanted podcasts and
      * would rather not have the app carry them at all.
      */
-    val podcastsEnabled = MutableStateFlow(true)
+    val podcastsEnabled = MutableStateFlow(false)
 
     /**
      * How strong the [liquidGlass] material is,
@@ -1675,7 +1675,7 @@ object AppSettings {
         reduceDynamicBlur.value = prefs.getBoolean(KEY_REDUCE_BLUR, lowEndDevice)
         liquidGlass.value = prefs.getBoolean(KEY_LIQUID_GLASS, false)
         foldingNavBar.value = prefs.getBoolean(KEY_FOLDING_NAV_BAR, true)
-        podcastsEnabled.value = prefs.getBoolean(KEY_PODCASTS_ENABLED, true)
+        podcastsEnabled.value = prefs.getBoolean(KEY_PODCASTS_ENABLED, false)
         liquidGlassIntensity.value = prefs.getFloat(KEY_LIQUID_GLASS_INTENSITY, 1f)
             .coerceIn(MIN_LIQUID_GLASS_INTENSITY, MAX_LIQUID_GLASS_INTENSITY)
         glassPerformance.value = prefs.getBoolean(KEY_GLASS_PERFORMANCE, false)
