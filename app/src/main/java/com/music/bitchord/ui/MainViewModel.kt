@@ -1227,6 +1227,31 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Removes [song] from one Apple Music playlist and drops the row from any
+     * open page for it without waiting for a reload.
+     */
+    suspend fun removeFromApplePlaylist(
+        config: com.music.bitchord.data.sources.SourceConfig,
+        playlistId: String,
+        song: Song,
+    ): Result<Unit> {
+        val result = AppleLikeRepository.removeFromPlaylist(config, playlistId, song)
+        result.onSuccess {
+            val pageId = APPLE_PLAYLIST_PREFIX + playlistId
+            _detailStack.value = _detailStack.value.map { page ->
+                val songs = page.songs
+                if (page.browseId == pageId && songs is UiState.Success) {
+                    page.copy(songs = UiState.Success(songs.data.filterNot { it.videoId == song.videoId }))
+                } else {
+                    page
+                }
+            }
+        }
+        result.onFailure { _appleLikeNotice.emit(it.friendly()) }
+        return result
+    }
+
+    /**
      * Sets (or clears) the thumbs rating on [videoId].
      *
      * Written to the screen first and rolled back if YouTube refuses. A rating

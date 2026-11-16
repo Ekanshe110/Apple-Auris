@@ -4039,11 +4039,25 @@ private fun BitChordApp(
                     playlistTargetTitle = null
                     playlistTargetArtwork = null
                 },
-                onRemoveFromPlaylist = editable?.let {
-                    {
-                        songActions = null
-                        viewModel.removeFromPlaylist(it.browseId, song)
+                onRemoveFromPlaylist = when {
+                    editable != null -> {
+                        {
+                            songActions = null
+                            viewModel.removeFromPlaylist(it.browseId, song)
+                        }
                     }
+                    detail?.browseId?.startsWith("apple:playlist:") == true &&
+                        appleCatalogConfig != null -> {
+                        {
+                            songActions = null
+                            viewModel.removeFromApplePlaylist(
+                                appleCatalogConfig,
+                                detail.browseId.removePrefix("apple:playlist:"),
+                                song,
+                            )
+                        }
+                    }
+                    else -> null
                 },
                 // The folders are the listener's own, so these are offered
                 // whether or not anyone is signed in — a folder is the answer
