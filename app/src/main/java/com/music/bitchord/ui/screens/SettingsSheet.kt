@@ -234,6 +234,7 @@ fun SettingsScreen(
     val seamlessQualityUpgrade by AppSettings.seamlessQualityUpgrade.collectAsStateWithLifecycle()
     val automixPerformance by AppSettings.automixPerformanceMode.collectAsStateWithLifecycle()
     val homeProvider by AppSettings.homeProvider.collectAsStateWithLifecycle()
+    val uiProvider by AppSettings.uiProvider.collectAsStateWithLifecycle()
     val recommendationAlgorithm by AppSettings.recommendationAlgorithm.collectAsStateWithLifecycle()
     val skipSilence by AppSettings.skipSilence.collectAsStateWithLifecycle()
     val spatialAudio by AppSettings.spatialAudio.collectAsStateWithLifecycle()
@@ -343,6 +344,7 @@ fun SettingsScreen(
     var pickingDownloadQuality by remember { mutableStateOf(false) }
     var pickingAutomixPerformance by remember { mutableStateOf(false) }
     var pickingHomeProvider by remember { mutableStateOf(false) }
+    var pickingUiProvider by remember { mutableStateOf(false) }
     var pickingRecommendationAlgorithm by remember { mutableStateOf(false) }
     // What the last export or import did, shown on the row that did it rather
     // than as a toast: a backup is the one action here whose outcome nobody can
@@ -917,6 +919,16 @@ fun SettingsScreen(
             // The catalogue and playback source. It owns libraries, search
             // routing, and whether Apple Music is the playback backend.
             // Discovery has its own recommendation-algorithm setting below.
+            val uiProviderTitle = stringResource(R.string.ui_provider)
+            row(uiProviderTitle, "ui", "provider", "look", "theme") {
+                SettingsRow(
+                    icon = Icons.Rounded.Tune,
+                    title = uiProviderTitle,
+                    subtitle = stringResource(R.string.ui_provider_subtitle),
+                    value = uiProvider.localizedLabel(),
+                    onClick = { pickingUiProvider = true },
+                )
+            }
             val homeProviderTitle = stringResource(R.string.home_provider)
             row(homeProviderTitle, "provider", "spotify", "youtube", "algorithm", "flow") {
                 SettingsRow(
@@ -2278,6 +2290,20 @@ fun SettingsScreen(
         }
     }
 
+    if (pickingUiProvider) {
+        ModalBottomSheet(
+            onDismissRequest = { pickingUiProvider = false },
+            containerColor = MaterialTheme.colorScheme.background,
+        ) {
+            HomeProviderSheet(
+                selected = uiProvider,
+                onSelect = { provider ->
+                    pickingUiProvider = false
+                    AppSettings.setUiProvider(provider)
+                },
+            )
+        }
+    }
     if (pickingHomeProvider) {
         ModalBottomSheet(
             onDismissRequest = { pickingHomeProvider = false },
