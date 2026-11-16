@@ -102,6 +102,7 @@ import com.music.bitchord.data.sources.SourceConfig
 import com.music.bitchord.data.sources.SourceHealth
 import com.music.bitchord.data.sources.SourceKind
 import com.music.bitchord.data.sources.SourceRegistry
+import com.music.bitchord.data.sources.SourceCatalogRole
 import com.music.bitchord.data.sources.mornye.SflxCatalog
 import com.music.bitchord.data.sources.mornye.SflxHost
 import com.music.bitchord.data.sources.mornye.SflxSignedSession
@@ -1107,32 +1108,39 @@ private fun AudioQuality.localizedLabel(): String = stringResource(    when (thi
 
 /** The second line of a row: what this source is, or what is wrong with it. */
 @Composable
-private fun SourceConfig.statusLine(health: SourceHealth?): String = when {
-    // A source that is switched off is never probed — see the probe filter in
-    // [SourcesScreen] — so its health stays null and the `needsServer` fallback
-    // below would go on saying "Checking…" for as long as it stayed off, which
-    // describes a request that was never made. The switch answers the question
-    // the line was asking.
-    !enabled -> stringResource(
-        if (kind.isUserAdded || kind == SourceKind.MODULE) {
-            R.string.source_addon_turned_off
-        } else {
-            R.string.source_turned_off
-        },
-    )
-    !isComplete -> stringResource(R.string.source_setup_required)
-    kind == SourceKind.JIOSAAVN -> stringResource(R.string.jiosaavn_mismatch_warning)
-    health is SourceHealth.Ok -> listOfNotNull(
-        health.detail,
-        kind.labels.take(3).joinToString(" · "),
-        // The addon's own `allowDownloads: 0`, said where the user will look
-        // when a download from it came from somewhere else.
-        stringResource(R.string.source_downloads_off).takeIf { !allowDownloads },
-    ).joinToString(" · ")
-    health is SourceHealth.Rejected -> health.reason
-    health is SourceHealth.Unreachable -> stringResource(R.string.source_unreachable, health.reason)
-    kind.needsServer -> stringResource(R.string.checking)
-    else -> kind.labels.take(3).joinToString(" · ")
+private fun SourceConfig.statusLine(health: SourceHealth?): String {
+    val labels = if (catalogRole == SourceCatalogRole.APPLE_MUSIC) {
+        listOf("ALAC", "Lossless", "Hi-Res")
+    } else {
+        kind.labels.take(3)
+    }
+    return when {
+        // A source that is switched off is never probed — see the probe filter in
+        // [SourcesScreen] — so its health stays null and the `needsServer` fallback
+        // below would go on saying "Checking…" for as long as it stayed off, which
+        // describes a request that was never made. The switch answers the question
+        // the line was asking.
+        !enabled -> stringResource(
+            if (kind.isUserAdded || kind == SourceKind.MODULE) {
+                R.string.source_addon_turned_off
+            } else {
+                R.string.source_turned_off
+            },
+        )
+        !isComplete -> stringResource(R.string.source_setup_required)
+        kind == SourceKind.JIOSAAVN -> stringResource(R.string.jiosaavn_mismatch_warning)
+        health is SourceHealth.Ok -> listOfNotNull(
+            health.detail,
+            labels.joinToString(" · "),
+            // The addon's own `allowDownloads: 0`, said where the user will look
+            // when a download from it came from somewhere else.
+            stringResource(R.string.source_downloads_off).takeIf { !allowDownloads },
+        ).joinToString(" · ")
+        health is SourceHealth.Rejected -> health.reason
+        health is SourceHealth.Unreachable -> stringResource(R.string.source_unreachable, health.reason)
+        kind.needsServer -> stringResource(R.string.checking)
+        else -> labels.joinToString(" · ")
+    }
 }
 
 /**
