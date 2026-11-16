@@ -306,12 +306,15 @@ class AddonSource(
      * addon, and playback still goes through this source's ordinary stream
      * route afterwards.
      */
-    suspend fun recommendationsResult(limit: Int): Result<List<Song>> = withContext(Dispatchers.IO) {
+    suspend fun recommendationsResult(
+        limit: Int,
+        seed: String? = null,
+    ): Result<List<Song>> = withContext(Dispatchers.IO) {
         if (limit <= 0) return@withContext Result.success(emptyList())
         if (shutOut("recommendations")) {
             return@withContext Result.failure(AddonException("Addon is switched off"))
         }
-        client.recommendations(limit).map { tracks ->
+        client.recommendations(limit, seed).map { tracks ->
             tracks.asSequence()
                 .filter { it.id.isNotBlank() && it.title.isNotBlank() }
                 .take(limit)

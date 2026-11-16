@@ -450,14 +450,21 @@ class AddonClient(
      * returned row through the normal `/stream` path, so selecting another
      * recommendation algorithm never changes the audio backend.
      */
-    suspend fun recommendations(limit: Int): Result<List<AddonTrack>> {
+    suspend fun recommendations(
+        limit: Int,
+        seed: String? = null,
+    ): Result<List<AddonTrack>> {
         if (limit <= 0) return Result.success(emptyList())
-        val params = mapOf("limit" to limit.coerceAtMost(100).toString())
+        val params = buildMap {
+            put("limit", limit.coerceAtMost(100).toString())
+            seed?.takeIf { it.isNotBlank() }?.let { put("seed", it) }
+        }
+        val resource = if (seed.isNullOrBlank()) "recommendations" else "autoplay"
         return recommendationFeeds.get(
-            key = "recommendations:${params.toString()}",
-            describe = { "▶ addon recommendations(${redact(baseUrl)}) limit=$limit" },
+            key = "$resource:${params.toString()}",
+            describe = { "▶ addon $resource(${redact(baseUrl)}) limit=$limit" },
         ) {
-            fetch<AddonRecommendationsResponse>(endpoint(listOf("recommendations"), params))
+            fetch<AddonRecommendationsResponse>(endpoint(listOf(resource), params))
         }.map { it.tracks }
     }
 
