@@ -312,7 +312,9 @@ internal object SpotifyHomeSource {
      * blank space.
      */
     private fun cardShelf(shelf: SpotifyHomeSection): HomeShelf? {
-        val items = shelf.cards.mapNotNull { card -> card.item() }
+        val items = shelf.cards
+            .mapNotNull { card -> card.item() }
+            .filter { it.videoId != null || it.browseId != null }
         if (items.isEmpty()) return null
         return HomeShelf(title = shelf.title, subtitle = shelf.subtitle, items = items)
     }
