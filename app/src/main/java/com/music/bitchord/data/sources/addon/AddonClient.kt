@@ -549,6 +549,48 @@ class AddonClient(
         ).map { it.tracks }
     }
 
+    // ── Radio ──────────────────────────────────────────────────────────────
+
+    /**
+     * The stations this addon's account can start.
+     *
+     * Apple's own stations: the account's personal one first, then the
+     * stations Apple builds for catalogue songs. An addon that does not
+     * publish radio answers 404, which is a failure here and not an empty
+     * list — the caller decides what to show without a station.
+     */
+    suspend fun radioStations(): Result<List<AddonStation>> =
+        fetch<AddonStationsResponse>(endpoint(listOf("radio", "stations"), emptyMap()))
+            .map { it.stations }
+
+    /**
+     * The tracks one station would play next.
+     *
+     * A station is a rolling selection: asking again later answers with the
+     * tracks after the ones already heard, so a station can be followed for as
+     * long as the listener wants it.
+     */
+    suspend fun radioStationTracks(
+        stationId: String,
+        limit: Int = 20,
+    ): Result<List<AddonTrack>> {
+        if (stationId.isBlank()) return Result.success(emptyList())
+        val params = mapOf("limit" to limit.coerceIn(1, 50).toString())
+        return fetch<AddonStationTracksResponse>(
+            endpoint(listOf("radio", "station", stationId, "tracks"), params),
+        ).map { it.tracks }
+    }
+
+    /**
+     * The station Apple built for one song, when it has one.
+     */
+    suspend fun radioStationForSong(songId: String): Result<AddonStation?> {
+        if (songId.isBlank()) return Result.success(null)
+        return fetch<AddonStationResponse>(
+            endpoint(listOf("radio", "song", songId, "station"), emptyMap()),
+        ).map { it.station }
+    }
+
     // ── Stream ────────────────────────────────────────────────────────────
 
     /**

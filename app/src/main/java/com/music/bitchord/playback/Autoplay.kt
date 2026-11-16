@@ -3,6 +3,7 @@ package com.music.bitchord.playback
 import com.music.bitchord.data.YtMusicRepository
 import com.music.bitchord.data.apple.AppleEnrichment
 import com.music.bitchord.data.apple.AppleHomeSource
+import com.music.bitchord.data.apple.AppleRadio
 import com.music.bitchord.data.listentogether.ListenTogether
 import com.music.bitchord.data.model.SearchFilter
 import com.music.bitchord.data.model.SearchResult
@@ -209,6 +210,18 @@ private suspend fun appleAutoplayPool(seed: Song, limit: Int): Result<List<Song>
 }
 
 /**
+ * The tracks the station itself would play next.
+ *
+ * A station is Apple's own rolling selection, so this is the true answer for
+ * a queue that belongs to one. Only the station's own rows are asked for: the
+ * catalogue-neighbour feed is a different thing and is kept as the fallback.
+ */
+private suspend fun appleStationPool(stationId: String, limit: Int): Result<List<Song>> =
+    captureSourceFailure {
+        AppleRadio.tracks(stationId, appleRecommendationPoolSize(limit))
+    }
+
+/**
  * Selects unseen Apple rows from a larger feed pool.
  *
  * Apple's recommendation feed can repeat the same head rows on every request.
@@ -275,6 +288,7 @@ suspend fun loadAutoplayTracks(
     seedSong: Song,
     limit: Int = MAX_QUEUED_AUTOPLAY,
     station: Boolean = false,
+    stationId: String? = null,
 ): Result<List<Song>> {
     if (limit <= 0) return Result.success(emptyList())
 
@@ -287,6 +301,11 @@ suspend fun loadAutoplayTracks(
     // Strict Apple mode resolves the pool after asking each source. Ask for a
     // wider set first, so an unresolved early row cannot shrink the answer.
     val candidateLimit = if (AppSettings.appleRichModeEnabled) limit * 3 else limit
+
+    // Whether Apple's rows came from the station the queue belongs to. Kept
+    // beside the pool because the pool itself is a plain list of songs, and a
+    // station that answered only with already-queued rows needs the fallback.
+    val appleFromStation = java.util.concurrent.atomic.AtomicBoolean(false)
 
     val (spotifyCandidates, youtubeCandidates, appleCandidates) = coroutineScope {
         val spotify = async {
@@ -322,6 +341,19 @@ suspend fun loadAutoplayTracks(
             ) {
                 return@async emptyList<Song>()
             }
+            // A queue that belongs to a station is topped up from that
+            // station, so it keeps being the station the listener chose.
+            val stationPool = stationId?.takeIf { seedSong.appleCatalogId != null }
+            if (stationPool != null) {
+                val rows = appleStationPool(stationPool, candidateLimit).getOrElse {
+                    sourceFailures += it
+                    emptyList()
+                }
+                if (rows.isNotEmpty()) {
+                    appleFromStation.set(true)
+                    return@async rows
+                }
+            }
             appleAutoplayPool(seedSong, candidateLimit).getOrElse {
                 sourceFailures += it
                 emptyList()
@@ -330,11 +362,26 @@ suspend fun loadAutoplayTracks(
         awaitAll(spotify, youtube, apple)
     }
 
-    val unseenAppleCandidates = selectUnseenAppleCandidates(
+    var unseenAppleCandidates = selectUnseenAppleCandidates(
         pool = appleCandidates,
         existing = existing,
         limit = candidateLimit,
     )
+
+    // A station that answered only with rows already queued would leave the
+    // queue dry. The neighbour feed is the honest fallback then: it is still
+    // Apple's own answer for the same recording, and it keeps the station
+    // playing instead of stopping at the end of the list.
+    if (unseenAppleCandidates.isEmpty() && appleFromStation.get()) {
+        unseenAppleCandidates = selectUnseenAppleCandidates(
+            pool = appleAutoplayPool(seedSong, candidateLimit).getOrElse {
+                sourceFailures += it
+                emptyList()
+            },
+            existing = existing,
+            limit = candidateLimit,
+        )
+    }
 
     // All mode takes turns between the three feeds. Concatenating them would
     // let the first full feed consume the whole limit and leave the other two

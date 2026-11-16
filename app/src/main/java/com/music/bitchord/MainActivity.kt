@@ -143,6 +143,7 @@ import com.music.bitchord.data.AppAnnouncements
 import com.music.bitchord.data.AppUpdateChecker
 import com.music.bitchord.data.LocalMediaRepository
 import com.music.bitchord.data.apple.AppleEnrichment
+import com.music.bitchord.data.apple.AppleRadio
 import com.music.bitchord.data.sources.mornye.InstalledSflx
 import com.music.bitchord.data.sources.mornye.SflxCatalog
 import com.music.bitchord.data.listentogether.JamInviteLink
@@ -230,6 +231,7 @@ import com.music.bitchord.playback.fromAutoplay
 import com.music.bitchord.playback.hasYouTubeOriginal
 import com.music.bitchord.playback.loadAutoplayTracks
 import com.music.bitchord.playback.playSongs
+import com.music.bitchord.playback.setRadioStation
 import com.music.bitchord.playback.toMediaItem
 import com.music.bitchord.playback.toSong
 import com.music.bitchord.playback.toDirectYouTubeMediaItem
@@ -2288,19 +2290,31 @@ private fun BitChordApp(
                     playbackSourceType = PlaybackSourceType.SHARED_LINK,
                     playbackSourceId = song.videoId,
                 )
-                val related = loadAutoplayTracks(
-                    existing = listOf(seed),
-                    seedSong = seed,
-                    limit = INITIAL_RADIO_TRACKS,
-                    // An explicit station, not a queue top-up: this is the
-                    // listener asking for a radio, so the provider's own
-                    // algorithm answers it rather than the seed pool.
-                    station = true,
-                ).getOrElse {
-                    if (request == playRequestGeneration) {
-                        Toast.makeText(context, R.string.couldnt_load_tracks, Toast.LENGTH_SHORT).show()
+                // An Apple recording has a station of its own, and that station
+                // is the true answer for "start radio": it is Apple's own
+                // rolling selection rather than a neighbour feed.
+                val appleStation = song.appleCatalogId?.takeIf { it.isNotBlank() }
+                    ?.let { id -> AppleRadio.stationForSong(id).getOrNull() }
+                val stationRows = appleStation?.let {
+                    AppleRadio.tracks(it.id, INITIAL_RADIO_TRACKS).getOrElse { emptyList() }
+                }.orEmpty()
+                val related = if (stationRows.isNotEmpty()) {
+                    stationRows
+                } else {
+                    loadAutoplayTracks(
+                        existing = listOf(seed),
+                        seedSong = seed,
+                        limit = INITIAL_RADIO_TRACKS,
+                        // An explicit station, not a queue top-up: this is the
+                        // listener asking for a radio, so the provider's own
+                        // algorithm answers it rather than the seed pool.
+                        station = true,
+                    ).getOrElse {
+                        if (request == playRequestGeneration) {
+                            Toast.makeText(context, R.string.couldnt_load_tracks, Toast.LENGTH_SHORT).show()
+                        }
+                        return@launch
                     }
-                    return@launch
                 }
                 if (related.isEmpty()) {
                     if (request == playRequestGeneration) {
@@ -2335,12 +2349,73 @@ private fun BitChordApp(
                     activeRadioSeed = null
                     activeController.playSongs(listOf(seed) + related, 0)
                 }
+                // The queue belongs to this station now, so the top-up asks the
+                // same station for what comes next.
+                activeController.setRadioStation(appleStation?.id)
                 // Make this station — never the queue from before it — what a
                 // fresh process restores, even if it is killed immediately.
                 activeController.commitRadioQueue()
                 Toast.makeText(
                     context,
                     context.getString(R.string.radio_started, song.title),
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }
+    }
+    /**
+     * Starts an Apple station: the tracks Apple says it plays next, and then
+     * the same station keeps answering for what comes after them.
+     *
+     * The station's own rows are ordinary catalogue songs, so they play
+     * through the ordinary Apple path. The station id is given to the service
+     * afterwards, so the queue is topped up from that station rather than
+     * from a neighbour feed.
+     */
+    val playAppleStation: (String, String) -> Unit = station@{ stationId, title ->
+        val originalController = controller
+        if (originalController != null && !refusedByHost()) {
+            val request = ++playRequestGeneration
+            val originalManualQueue = (0 until originalController.mediaItemCount)
+                .map { originalController.getMediaItemAt(it) }
+                .filterNot { it.fromAutoplay }
+                .map { it.mediaId }
+            scope.launch {
+                val songs = AppleRadio.tracks(stationId, INITIAL_RADIO_TRACKS).getOrElse {
+                    if (request == playRequestGeneration) {
+                        Toast.makeText(context, R.string.couldnt_load_tracks, Toast.LENGTH_SHORT).show()
+                    }
+                    return@launch
+                }
+                if (songs.isEmpty()) {
+                    if (request == playRequestGeneration) {
+                        Toast.makeText(context, R.string.couldnt_load_tracks, Toast.LENGTH_SHORT).show()
+                    }
+                    return@launch
+                }
+                val activeController = controller
+                val activeManualQueue = (0 until activeController.mediaItemCount)
+                    .map { activeController.getMediaItemAt(it) }
+                    .filterNot { it.fromAutoplay }
+                    .map { it.mediaId }
+                if (request != playRequestGeneration || activeManualQueue != originalManualQueue) {
+                    return@launch
+                }
+                activeController.beginRadioQueue()
+                val queue = songs.map { song ->
+                    song.copy(
+                        radioName = title,
+                        playbackSource = title,
+                        playbackSourceType = PlaybackSourceType.EXPLORE,
+                        playbackSourceId = stationId,
+                    )
+                }
+                activeController.playSongs(queue, 0)
+                activeController.setRadioStation(stationId)
+                activeController.commitRadioQueue()
+                Toast.makeText(
+                    context,
+                    context.getString(R.string.radio_started, title),
                     Toast.LENGTH_SHORT,
                 ).show()
             }
@@ -5354,7 +5429,13 @@ private fun BitChordApp(
                                 }
                             },
                             onStationClick = { category ->
-                                if (category.browseId.startsWith("apple:")) {
+                                if (category.browseId.startsWith(AppleRadio.BROWSE_PREFIX)) {
+                                    // An Apple station of its own: it plays the
+                                    // tracks Apple says it plays next.
+                                    val stationId = category.params
+                                        ?: category.browseId.removePrefix(AppleRadio.BROWSE_PREFIX)
+                                    playAppleStation(stationId, category.title)
+                                } else if (category.browseId.startsWith("apple:")) {
                                     viewModel.openDetail(
                                         browseId = category.browseId,
                                         title = category.title,

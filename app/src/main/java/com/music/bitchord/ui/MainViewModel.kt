@@ -22,6 +22,7 @@ import com.music.bitchord.data.apple.AppleLikeRepository
 import com.music.bitchord.data.apple.AppleLibraryCollection
 import com.music.bitchord.data.apple.AppleLibraryState
 import com.music.bitchord.data.apple.AppleLibraryStore
+import com.music.bitchord.data.apple.AppleRadio
 import com.music.bitchord.data.apple.asLibraryItem
 import com.music.bitchord.data.LikeState
 import com.music.bitchord.data.sources.addon.AddonLibraryItem
@@ -2647,6 +2648,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun fetchExplore() {
         if (AppSettings.homeProvider.value == HomeProvider.APPLE) {
+            // Apple's own stations first: the account's personal station and
+            // the stations Apple builds for catalogue songs. They are real
+            // stations and they play real songs, so they come before the
+            // playlist cards below, which are only collections.
+            val stations = AppleRadio.stations().getOrNull().orEmpty()
+            if (stations.isNotEmpty()) {
+                val items = stations.map { station ->
+                    val tile = AppleRadio.tile(station)
+                    MoodGenre(
+                        title = tile.title,
+                        browseId = tile.browseId,
+                        params = tile.stationId,
+                        thumbnailUrl = tile.thumbnailUrl,
+                    )
+                }
+                _explore.value = UiState.Success(listOf(MoodGenreSection("Apple Music Radio", items)))
+                return
+            }
             val shelves = AppleHomeSource.shelves().getOrNull().orEmpty()
             val items = shelves
                 .flatMap { it.items }

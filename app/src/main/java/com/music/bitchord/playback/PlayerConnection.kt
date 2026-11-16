@@ -165,6 +165,21 @@ suspend fun MediaController.beginRadioQueue() {
     ).await()
 }
 
+/**
+ * Tells the service which station the queue belongs to.
+ *
+ * A station id keeps the top-up asking that station for what comes next, so
+ * the queue stays the station the listener chose instead of drifting into a
+ * neighbour feed. A null id means the queue is not a station's queue.
+ */
+suspend fun MediaController.setRadioStation(stationId: String?) {
+    val args = Bundle().apply { putString(EXTRA_RADIO_STATION, stationId.orEmpty()) }
+    sendCustomCommand(
+        SessionCommand(ACTION_SET_RADIO_STATION, Bundle.EMPTY),
+        args,
+    ).await()
+}
+
 /** The key the service's answer about a manual upgrade travels in. */
 const val EXTRA_UPGRADE_OUTCOME = "com.music.bitchord.extra.UPGRADE_OUTCOME"
 
@@ -1237,6 +1252,9 @@ fun mediaIdIn(uri: Uri): String? = if (uri.authority == "source") {
  */
 suspend fun MediaController.playSongs(songs: List<Song>, startIndex: Int) {
     if (songs.isEmpty()) return
+    // An ordinary queue is not a station's queue. Clearing the station here
+    // means the top-up stops asking a station that no longer owns the queue.
+    setRadioStation(null)
     // A queue started while shuffle is on goes in shuffled rather than being
     // played out of order — see [QueueShuffle]. The track the user picked still
     // leads, so it ends up at the top instead of at [startIndex].

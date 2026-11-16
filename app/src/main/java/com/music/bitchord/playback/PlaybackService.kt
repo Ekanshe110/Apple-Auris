@@ -222,6 +222,17 @@ const val ACTION_SWAP_TO_VERSION = "com.music.bitchord.action.SWAP_TO_VERSION"
 const val ACTION_BEGIN_RADIO_QUEUE = "com.music.bitchord.action.BEGIN_RADIO_QUEUE"
 const val ACTION_COMMIT_RADIO_QUEUE = "com.music.bitchord.action.COMMIT_RADIO_QUEUE"
 
+/**
+ * Session command carrying the station the queue belongs to.
+ *
+ * An empty station id means "no station": the queue is an ordinary one and
+ * the top-up must not keep asking Apple's stations for it.
+ */
+const val ACTION_SET_RADIO_STATION = "com.music.bitchord.action.SET_RADIO_STATION"
+
+/** Bundle key for the station id inside [ACTION_SET_RADIO_STATION]. */
+const val EXTRA_RADIO_STATION = "station"
+
 /** Session command behind the player menu's "Upgrade quality". */
 const val ACTION_UPGRADE_QUALITY = "com.music.bitchord.action.UPGRADE_QUALITY"
 
@@ -858,6 +869,13 @@ class PlaybackService : MediaLibraryService() {
     /** Logical queue request, before a video id is replaced by its audio counterpart. */
     private var preferredPrefetchRequest: Pair<Boolean, List<String>>? = null
     private var autoplaySeed: String? = null
+
+    /**
+     * The Apple station the current queue belongs to, when it is a station's
+     * queue. Null for every ordinary queue, so the top-up asks the ordinary
+     * neighbour feed instead.
+     */
+    private var radioStationId: String? = null
 
     /** Index in the live queue represented by entry zero of the persisted window. */
     private var persistedQueueStart = 0
@@ -3871,7 +3889,7 @@ class PlaybackService : MediaLibraryService() {
                 } else {
                     queueSongs
                 }
-                val result = loadAutoplayTracks(existing, seed, remaining)
+                val result = loadAutoplayTracks(existing, seed, remaining, stationId = radioStationId)
                 val resolved = result.getOrElse {
                     TrackLog.w(
                         "BitChord",
@@ -7522,11 +7540,26 @@ class PlaybackService : MediaLibraryService() {
         autoplayLoadJob?.cancel()
         autoplayLoadJob = null
         autoplaySeed = null
+        radioStationId = null
         repeatAllStash = emptyList()
         repeatAllStashSeed = null
         sessionSongHistory.clear()
         persistedQueueStart = 0
         LastPlayed.clearImmediately()
+    }
+
+    /**
+     * Remember which station the queue belongs to.
+     *
+     * The station id is what the top-up asks Apple for, so the queue keeps
+     * being the same station instead of drifting into a neighbour feed. An
+     * empty id means the queue is not a station's queue at all.
+     */
+    private fun setRadioStation(stationId: String?) {
+        radioStationId = stationId?.takeIf { it.isNotBlank() }
+        // The next top-up must be made against the new station, not against
+        // the seed that was latched for the old one.
+        autoplaySeed = null
     }
 
     /** Persist index and position without touching or serializing queue contents. */
@@ -10279,6 +10312,8 @@ class PlaybackService : MediaLibraryService() {
                 ACTION_SWAP_TO_VERSION -> swapCurrentToVersion(args)
                 ACTION_BEGIN_RADIO_QUEUE -> beginRadioQueue()
                 ACTION_COMMIT_RADIO_QUEUE -> player?.let(::saveQueueSnapshotImmediately)
+                ACTION_SET_RADIO_STATION ->
+                    setRadioStation(args.getString(EXTRA_RADIO_STATION))
                 ACTION_UPGRADE_QUALITY -> {
                     val outcome = upgradeQualityNow()
                     return Futures.immediateFuture(

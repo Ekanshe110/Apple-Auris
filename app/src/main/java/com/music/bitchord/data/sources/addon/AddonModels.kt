@@ -327,6 +327,41 @@ data class AddonHomeItem(
     @SerialName("isrc") val isrc: String? = null,
 )
 
+// ── Radio ────────────────────────────────────────────────────────────────
+
+/**
+ * One station, as the addon publishes it.
+ *
+ * A station is Apple's own rolling selection of songs: the account's own
+ * station (`kind` = `user`) and the stations Apple builds for catalogue songs
+ * (`kind` = `songSeeded`). The id is Apple's, not the addon's, and is used
+ * verbatim when the tracks of that station are asked for.
+ */
+@Serializable
+data class AddonStation(
+    @SerialName("id") val id: String = "",
+    @SerialName("name") val name: String = "",
+    /** `user`, `songSeeded`, `playlistSeeded` — Apple's own name for the kind. */
+    @SerialName("kind") val kind: String? = null,
+    @SerialName("subtitle") val subtitle: String? = null,
+    @SerialName("artworkURL") val artworkURL: String? = null,
+)
+
+@Serializable
+data class AddonStationsResponse(
+    @SerialName("stations") val stations: List<AddonStation> = emptyList(),
+)
+
+@Serializable
+data class AddonStationResponse(
+    @SerialName("station") val station: AddonStation? = null,
+)
+
+@Serializable
+data class AddonStationTracksResponse(
+    @SerialName("tracks") val tracks: List<AddonTrack> = emptyList(),
+)
+
 @Serializable
 data class AddonTrack(
     @SerialName("id") val id: String = "",

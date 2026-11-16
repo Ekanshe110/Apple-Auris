@@ -57,7 +57,14 @@ class AddonSource(
     override val kind: SourceKind get() = config.kind
     override val displayName: String get() = config.displayName
 
-    private val client = AddonClient(config.baseUrl)
+    /**
+     * The client every request to this addon goes through.
+     *
+     * Shared with the Apple helpers that read this addon's own routes — the
+     * radio stations among them — so they use the same client instance and
+     * therefore the same manifest, library credential and caches.
+     */
+    internal val client = AddonClient(config.baseUrl)
 
     /**
      * Rows this addon has recently handed over, by their own track id.
