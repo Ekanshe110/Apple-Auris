@@ -5339,7 +5339,18 @@ private fun BitChordApp(
                                     startRadio(song)
                                 }
                             },
-                            onStationClick = viewModel::openMoodGenre,
+                            onStationClick = { category ->
+                                if (category.browseId.startsWith("apple:")) {
+                                    viewModel.openDetail(
+                                        browseId = category.browseId,
+                                        title = category.title,
+                                        subtitle = "Apple Music",
+                                        thumbnailUrl = category.thumbnailUrl,
+                                    )
+                                } else {
+                                    viewModel.openMoodGenre(category)
+                                }
+                            },
                             onGenresClick = { showGenres = true },
                             onStartStation = { selectedTab = TAB_SEARCH },
                             onRetry = viewModel::loadExplore,
