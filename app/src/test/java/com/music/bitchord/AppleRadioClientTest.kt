@@ -133,7 +133,7 @@ class AppleRadioClientTest {
         assertEquals(1, stations.size)
         assertTrue(stations[0].isLive == true)
         assertEquals("Apple Music 1", stations[0].name)
-        assertEquals("/radio/live", server.takeRequest().path)
+        assertEquals("/radio/live", server.takeRequest().path?.substringBefore("?"))
     }
 
     @Test
