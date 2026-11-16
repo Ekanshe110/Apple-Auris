@@ -2616,6 +2616,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var exploreRequested = false
 
     private suspend fun fetchExplore() {
+        if (AppSettings.homeProvider.value == HomeProvider.APPLE) {
+            val shelves = AppleHomeSource.shelves().getOrNull().orEmpty()
+            val items = shelves
+                .flatMap { it.items }
+                .filter { it.browseId?.startsWith("apple:playlist:") == true }
+                .distinctBy { it.browseId }
+                .map { item ->
+                    MoodGenre(
+                        title = item.title,
+                        browseId = requireNotNull(item.browseId),
+                        params = null,
+                        thumbnailUrl = item.thumbnailUrl,
+                    )
+                }
+            _explore.value = if (items.isEmpty()) {
+                UiState.Error("Apple Music returned no radio playlists")
+            } else {
+                UiState.Success(listOf(MoodGenreSection("Apple Music Radio", items)))
+            }
+            return
+        }
         val state = YtMusicRepository.moodAndGenres().fold(
             onSuccess = { sections ->
                 if (sections.isEmpty()) {
