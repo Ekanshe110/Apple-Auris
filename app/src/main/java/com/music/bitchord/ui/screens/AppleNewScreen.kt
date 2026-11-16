@@ -179,7 +179,7 @@ fun AppleNewScreen(
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     }
                 }
-            }
+            } else Unit
         }
     }
 }
