@@ -29,6 +29,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Sort
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -138,6 +141,14 @@ fun AppleLibraryScreen(
         detailTitle?.takeIf { it.isNotBlank() } ?: collection.label
     }
 
+    val shownItems = remember(state.items, sort) {
+        when (sort) {
+            AppleLibrarySort.TITLE -> state.items.sortedBy { it.title.lowercase() }
+            AppleLibrarySort.ARTIST -> state.items.sortedBy { it.artist.lowercase() }
+            AppleLibrarySort.DEFAULT -> state.items
+        }
+    }
+
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         state = activeListState,
@@ -228,13 +239,6 @@ fun AppleLibraryScreen(
         }
 
         if (state.items.isNotEmpty()) {
-            val shownItems = remember(state.items, sort) {
-                when (sort) {
-                    AppleLibrarySort.TITLE -> state.items.sortedBy { it.title.lowercase() }
-                    AppleLibrarySort.ARTIST -> state.items.sortedBy { it.artist.lowercase() }
-                    AppleLibrarySort.DEFAULT -> state.items
-                }
-            }
             itemsIndexed(
                 items = shownItems,
                 key = { index, item ->
