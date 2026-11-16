@@ -5333,7 +5333,6 @@ private fun BitChordApp(
                                 selectedTab = TAB_SEARCH
                             },
                             onRetry = { viewModel.refresh(MainViewModel.Feed.HOME) },
-                            showExploreList = uiProvider == HomeProvider.APPLE,
                         )
                         TAB_PODCASTS -> PodcastsScreen(
                             state = podcastsState,
