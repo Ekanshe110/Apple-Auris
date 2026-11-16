@@ -4518,7 +4518,14 @@ class PlaybackService : MediaLibraryService() {
         }
         if (exoPlayer.isPlaying) registerCurrentPlay()
         savePlaybackState(exoPlayer)
-        prefetchAround(exoPlayer)
+        // Only read ahead once this track is actually producing audio. A
+        // manual skip lands here while the player is still buffering, and the
+        // old unconditional call started a 1 MiB fetch of the *following*
+        // track over the same link the skipped-to track was starting on —
+        // measured 7.2 s to first audio on a 24/96 ALAC. `onIsPlayingChanged`
+        // starts the read-ahead as soon as playback is ready, so nothing is
+        // lost for a gapless transition, which arrives while still playing.
+        if (exoPlayer.isPlaying) prefetchAround(exoPlayer) else cancelPrefetch()
         // The second look belongs to the track it was started for; the
         // queue moving on ends it — unless it is already proving what it
         // found, see [cancelStaleUpgradeJob] — and starts the new
