@@ -261,6 +261,28 @@ object AppleEnrichment {
             .filter { it.isNotBlank() }
             .joinToString(" ")
         if (query.isBlank()) return Result.success(null)
+        // An ISRC names the recording, not its spelling. Ask for it first:
+        // Apple's catalogue often credits a film song differently from the
+        // source row, and a title search then reports a false miss.
+        song.isrc?.trim()?.takeIf { it.isNotBlank() }?.let { wantedIsrc ->
+            val isrcRows = source.searchResult("isrc:$wantedIsrc", limit = 10, request = null)
+                .getOrNull()
+                .orEmpty()
+            val exact = isrcRows.firstOrNull {
+                it.appleCatalogId != null &&
+                    it.isrc?.equals(wantedIsrc, ignoreCase = true) == true
+            } ?: isrcRows.firstOrNull { it.appleCatalogId != null }
+            if (exact != null) {
+                return Result.success(
+                    AppleResolution(
+                        id = exact.appleCatalogId!!,
+                        isExplicit = exact.isExplicit,
+                        contentRating = exact.contentRating,
+                        isrc = exact.isrc,
+                    ),
+                )
+            }
+        }
 
         val rows = source.searchResult(query, limit = 10, request = null)
             .getOrElse { failure ->
