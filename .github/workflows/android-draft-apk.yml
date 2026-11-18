@@ -316,7 +316,9 @@ jobs:
           grep -q "versionName = \"$v\"" app/build.gradle.kts
 
       # The dev flavour, release build type: R8, no debuggable runtime, signed.
-      # The ABI splits give one APK per architecture plus a universal one.
+      # One APK: arm64-v8a (see the splits block in app/build.gradle.kts). The
+      # other ABI splits and the universal package bought nothing on a phone
+      # and cost native build and packaging time.
       #
       # Speed: --build-cache keeps a cache of task outputs across runs (the
       # shared modules and the native build are usually unchanged between

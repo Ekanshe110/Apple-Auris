@@ -101,12 +101,33 @@ android {
         )
     }
 
+    /*
+     * Which ABIs this build produces. arm64-v8a only by default: the drafts
+     * are sideloaded on modern phones, and the other splits were most of the
+     * native build and packaging time for architectures nobody installs here.
+     * The universal APK is off for the same reason — with one ABI it is a
+     * second copy of the same bytes.
+     *
+     * Nothing is lost from the APK itself: dex, resources and R8 output are
+     * per-variant, and the only per-ABI payload is the .so set, which is the
+     * same code for every arm64 phone. A build that needs the other ABIs asks
+     * for them:
+     *
+     *   ./gradlew :app:assembleDevRelease \
+     *     -Pauris.abis=armeabi-v7a,arm64-v8a,x86_64 -Pauris.universal=true
+     */
+    val targetAbis = (providers.gradleProperty("auris.abis").orNull ?: "arm64-v8a")
+        .split(',')
+        .map(String::trim)
+        .filter { it.isNotEmpty() }
+    val universalApk = providers.gradleProperty("auris.universal").orNull?.toBoolean() ?: false
+
     splits {
         abi {
             isEnable = true
             reset()
-            include("armeabi-v7a", "arm64-v8a", "x86_64")
-            isUniversalApk = true
+            include(*targetAbis.toTypedArray())
+            isUniversalApk = universalApk
         }
     }
 
