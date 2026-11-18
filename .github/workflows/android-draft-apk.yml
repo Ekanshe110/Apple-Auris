@@ -332,13 +332,14 @@ jobs:
       # shared modules and the native build are usually unchanged between
       # drafts), --parallel compiles the three modules :app depends on at once.
       #
-      # lintVital is NOT skipped. It is excluded from this invocation only
-      # because the `lint` job below runs the identical task on its own runner
-      # at the same time, and the `draft` job needs both — so a fatal lint
-      # issue still stops the release, it just no longer stands in front of the
-      # compiler. Measured on run 44396253138: ~205s of a 466s build, 150s of
-      # it in this module's report task, which is why it is worth a second
-      # runner rather than a serial step.
+      # fast=true (the default, matching the Appix lane) sets
+      # -Pauris.fastApk=true: no R8, no resource shrinking, no lintVital in
+      # this invocation — the six minutes that separate a test APK from a
+      # shipping build. What it does NOT remove: compilation of every module,
+      # the class guards, the package / versionCode / signature checks below,
+      # or the lint gate in the `lint` job, which runs the identical lintVital
+      # task on its own runner at the same time and is required by `draft`.
+      # fast=false gives the full R8 build (~11.5 min).
       - name: Build the APKs
         run: |
           set -euo pipefail
