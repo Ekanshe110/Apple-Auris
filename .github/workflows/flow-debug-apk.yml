@@ -82,7 +82,7 @@ jobs:
         run: |
           ./gradlew \
             --build-cache --parallel --console=plain \
-            -x lintVitalAnalyzeDevRelease -x lintVitalReportDevRelease -x lintVitalDevRelease \
+            -Pauris.fastApk=true \
             :app:assembleDevRelease
 
       # Staging only: the deliverable copy is uploaded by `deliver`, after the

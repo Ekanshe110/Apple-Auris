@@ -90,10 +90,25 @@ val targetAbis = (providers.gradleProperty("auris.abis").orNull ?: "arm64-v8a")
     .filter { it.isNotEmpty() }
 val universalApk = providers.gradleProperty("auris.universal").orNull?.toBoolean() ?: false
 
+/*
+ * Set by the APK workflow's build job only. Fatal-severity lint (lintVital) is
+ * the release gate AGP wires into assembleRelease, and it costs ~200s on top of
+ * the compile; the workflow runs the identical task in a parallel `lint` job,
+ * so this flag takes it out of the APK build without taking it out of the
+ * pipeline. Nothing else passes it, so every local build and every other lane
+ * still runs lintVital as AGP intends.
+ */
+val fastApk = providers.gradleProperty("auris.fastApk").orNull == "true"
+
 android {
     namespace = "com.music.bitchord"
     // InnerTubeX's AAR requires compiling against 37; targetSdk (runtime behaviour) stays 36.
     compileSdk = 37
+
+    lint {
+        // See [fastApk]. The gate itself still runs — in the `lint` job.
+        checkReleaseBuilds = !fastApk
+    }
 
     defaultConfig {
         applicationId = "com.music.bitchord"
