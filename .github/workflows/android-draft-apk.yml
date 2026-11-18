@@ -250,7 +250,9 @@ jobs:
   build:
     name: Build and draft
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # Was 90; the measured build is ~4.5 min once lintVital is out of the graph
+    # (see the build step), so a hang is worth catching sooner than that.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -259,7 +261,15 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: gradle
+
+      # Gradle's own cache: dependency-aware restore key plus the local build
+      # cache. setup-java's `cache: gradle` restores only on an exact *.gradle*
+      # hash and keeps no build cache, so a dependency bump used to re-download
+      # everything, and unchanged modules (shared, sharedUi, the native build)
+      # were recompiled on every draft.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          add-job-summary: 'on-failure'
 
       - run: chmod +x gradlew
 
@@ -274,8 +284,15 @@ jobs:
       # signed with — so a tester installs this over the last one without
       # uninstalling first, and without touching the prod package.
       - name: Fork signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
         run: |
-          echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > bitchord-fork.jks
+          set -euo pipefail
+          if [ -z "${KEYSTORE_B64:-}" ]; then
+            echo "::error::ANDROID_KEYSTORE_B64 is not set for this repository. Add the fork keystore (base64) before building, or the APK cannot install over the last draft."
+            exit 1
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > bitchord-fork.jks
           {
             echo "storeFile=bitchord-fork.jks"
             echo "storePassword=android"
@@ -300,8 +317,22 @@ jobs:
 
       # The dev flavour, release build type: R8, no debuggable runtime, signed.
       # The ABI splits give one APK per architecture plus a universal one.
+      #
+      # Speed: --build-cache keeps a cache of task outputs across runs (the
+      # shared modules and the native build are usually unchanged between
+      # drafts), --parallel compiles the three modules :app depends on at once.
+      # The -x lines drop lintVital*, measured at ~205s of a 466s build on run
+      # 44396253138 — 150s of it in this module's report task alone. Nothing
+      # else in this repository runs lint, so the pass only ever cost the wall
+      # clock; re-add the -x lines to lint's side if fatal lint should gate a
+      # draft. The package, version and signature checks below still run.
       - name: Build the APKs
-        run: ./gradlew :app:assembleDevRelease
+        run: |
+          ./gradlew \
+            --build-cache --parallel --console=plain \
+            -x lintVitalAnalyzeRelease -x lintVitalReportRelease -x lintVitalRelease \
+            -x lintVitalAnalyzeDevRelease -x lintVitalReportDevRelease -x lintVitalDevRelease \
+            :app:assembleDevRelease
 
       - name: Collect
         run: |
@@ -326,6 +357,10 @@ jobs:
         with:
           name: android-draft-apk
           path: dist/*.apk
+          # The APKs are already deflated; re-compressing them for the artifact
+          # zip only spends runner time.
+          compression-level: 0
+          if-no-files-found: error
 
       # The package, the version and the signing certificate, checked before
       # anything is published: a tester installs this over the last draft, so

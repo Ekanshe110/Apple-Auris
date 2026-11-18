@@ -9,9 +9,16 @@ on:
     # build.
     tags: ["draft-*"]
 
+# A second dispatch replaces the first instead of queueing behind it: two
+# APKs from the same ref are never both wanted.
+concurrency:
+  group: flow-debug-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-debug:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -20,7 +27,15 @@ jobs:
         with:
           java-version: '21'
           distribution: 'temurin'
-          cache: gradle
+
+      # Gradle's own cache, restored and saved with a dependency-aware key and
+      # with the local build cache inside it. setup-java's `cache: gradle` only
+      # restores on an exact hit of the *.gradle* hash and carries no build
+      # cache, so a single dependency bump used to throw the whole download set
+      # away; this restores the closest entry instead.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          add-job-summary: 'on-failure'
 
       - run: chmod +x gradlew
 
@@ -28,8 +43,15 @@ jobs:
       # debug Compose runs measurably slower) signed with the fork's stable
       # key so updates keep installing. Still a dev build, not prod.
       - name: Stable fork signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
         run: |
-          echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > bitchord-fork.jks
+          set -euo pipefail
+          if [ -z "${KEYSTORE_B64:-}" ]; then
+            echo "::error::ANDROID_KEYSTORE_B64 is not set for this repository. Add the fork keystore (base64) before building, or the APK cannot install over the last one."
+            exit 1
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > bitchord-fork.jks
           {
             echo "storeFile=bitchord-fork.jks"
             echo "storePassword=android"
@@ -47,11 +69,26 @@ jobs:
       # What is no longer guaranteed: a draft can carry a behaviour change
       # that compiles and is wrong. Run :app:testDevDebugUnitTest locally
       # before pushing a change worth testing on a phone.
+      #
+      # lintVital* is excluded. Measured on run 44396253138: the fatal-only
+      # lint pass adds ~205s to a 466s build (150s in the app's report task
+      # alone) and no other check in this repository runs lint, so it is a
+      # gate that only ever costs the wall clock. Re-add the -x lines if
+      # fatal lint should block a draft.
       - name: Build minified APK
-        run: ./gradlew :app:assembleDevRelease
+        run: |
+          ./gradlew \
+            --build-cache --parallel --console=plain \
+            -x lintVitalAnalyzeRelease -x lintVitalReportRelease -x lintVitalRelease \
+            -x lintVitalAnalyzeDevRelease -x lintVitalReportDevRelease -x lintVitalDevRelease \
+            :app:assembleDevRelease
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: bitchord-next-release
           path: app/build/outputs/apk/dev/release/*.apk
+          # The APKs are already deflated; re-compressing them for the artifact
+          # zip only spends runner time.
+          compression-level: 0
+          if-no-files-found: error

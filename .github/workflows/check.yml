@@ -3,6 +3,13 @@ name: Check
 on:
   push:
     branches: [main]
+    # Workflow and prose changes do not need the desktop, Android and Go
+    # matrix run against them, and the APK job in particular should not spend
+    # a runner on a change that cannot alter the app. A change that touches
+    # code still runs everything.
+    paths-ignore:
+      - '.github/**'
+      - '**.md'
   pull_request:
 
 concurrency:
