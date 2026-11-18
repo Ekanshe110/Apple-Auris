@@ -73,10 +73,10 @@ jobs:
       # that compiles and is wrong. Run :app:testDevDebugUnitTest locally
       # before pushing a change worth testing on a phone.
       #
-      # lintVital is not skipped — it is excluded from *this* invocation only
-      # because the `lint` job below runs the same task in parallel. The
-      # `deliver` job needs both, so no artifact exists unless lint passes.
-      # Measured: the pass costs ~205s of a 466s build (run 44396253138), so
+      # lintVital is not skipped — -Pauris.fastApk=true drops it from *this*
+      # invocation only, because the `lint` job below runs the same task in
+      # parallel. The `deliver` job needs both, so no artifact exists unless
+      # lint passes. Measured: the pass costs ~200s on top of the compile, so
       # serialising it in front of the APK was the single biggest cost here.
       - name: Build minified APK
         run: |
