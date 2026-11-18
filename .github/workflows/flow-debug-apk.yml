@@ -17,6 +17,7 @@ concurrency:
 
 jobs:
   build-debug:
+    name: Build
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -70,11 +71,11 @@ jobs:
       # that compiles and is wrong. Run :app:testDevDebugUnitTest locally
       # before pushing a change worth testing on a phone.
       #
-      # lintVital* is excluded. Measured on run 44396253138: the fatal-only
-      # lint pass adds ~205s to a 466s build (150s in the app's report task
-      # alone) and no other check in this repository runs lint, so it is a
-      # gate that only ever costs the wall clock. Re-add the -x lines if
-      # fatal lint should block a draft.
+      # lintVital is not skipped — it is excluded from *this* invocation only
+      # because the `lint` job below runs the same task in parallel. The
+      # `deliver` job needs both, so no artifact exists unless lint passes.
+      # Measured: the pass costs ~205s of a 466s build (run 44396253138), so
+      # serialising it in front of the APK was the single biggest cost here.
       - name: Build minified APK
         run: |
           ./gradlew \
@@ -83,12 +84,70 @@ jobs:
             -x lintVitalAnalyzeDevRelease -x lintVitalReportDevRelease -x lintVitalDevRelease \
             :app:assembleDevRelease
 
+      # Staging only: the deliverable copy is uploaded by `deliver`, after the
+      # lint job has passed.
+      - name: Upload the built APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-staging
+          path: app/build/outputs/apk/dev/release/*.apk
+          # The APKs are already deflated; re-compressing them for the artifact
+          # zip only spends runner time.
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  lint:
+    name: lintVital
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          add-job-summary: 'on-failure'
+
+      - run: chmod +x gradlew
+
+      # The release gate exactly as AGP wires it: fatal-severity lint, build
+      # aborted on a hit. Same task the assemble would have run, on its own
+      # runner, while the APK builds.
+      - name: Fatal-severity lint
+        run: ./gradlew --build-cache --parallel --console=plain :app:lintVitalDevRelease
+
+      - name: Upload the lint report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          path: |
+            app/build/reports/lint-results-*.html
+            app/build/reports/lint-results-*.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+  deliver:
+    name: Deliver
+    needs: [build-debug, lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: apk-staging
+          path: dist
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: bitchord-next-release
-          path: app/build/outputs/apk/dev/release/*.apk
-          # The APKs are already deflated; re-compressing them for the artifact
-          # zip only spends runner time.
+          path: dist/*.apk
           compression-level: 0
           if-no-files-found: error

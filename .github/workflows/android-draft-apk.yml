@@ -248,11 +248,11 @@ concurrency:
 
 jobs:
   build:
-    name: Build and draft
+    name: Build and verify
     runs-on: ubuntu-latest
-    # Was 90; the measured build is ~4.5 min once lintVital is out of the graph
-    # (see the build step), so a hang is worth catching sooner than that.
-    timeout-minutes: 45
+    # ~4 min of real work; the old 90-minute ceiling only delayed noticing a
+    # hang. lintVital runs in the parallel `lint` job, not here.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -321,11 +321,14 @@ jobs:
       # Speed: --build-cache keeps a cache of task outputs across runs (the
       # shared modules and the native build are usually unchanged between
       # drafts), --parallel compiles the three modules :app depends on at once.
-      # The -x lines drop lintVital*, measured at ~205s of a 466s build on run
-      # 44396253138 — 150s of it in this module's report task alone. Nothing
-      # else in this repository runs lint, so the pass only ever cost the wall
-      # clock; re-add the -x lines to lint's side if fatal lint should gate a
-      # draft. The package, version and signature checks below still run.
+      #
+      # lintVital is NOT skipped. It is excluded from this invocation only
+      # because the `lint` job below runs the identical task on its own runner
+      # at the same time, and the `draft` job needs both — so a fatal lint
+      # issue still stops the release, it just no longer stands in front of the
+      # compiler. Measured on run 44396253138: ~205s of a 466s build, 150s of
+      # it in this module's report task, which is why it is worth a second
+      # runner rather than a serial step.
       - name: Build the APKs
         run: |
           ./gradlew \
@@ -395,9 +398,68 @@ jobs:
             test "$cert" = "$EXPECTED_FINGERPRINT"
           done
 
-      # The draft itself: private, untagged, no publish. GitHub creates the
-      # tag only when a draft is published, so nothing is cut here — the
-      # draft is a download, not a release.
+  # The gate AGP would have run inside assembleRelease, on its own runner and
+  # in parallel with the build: fatal-severity lint, build aborted on a hit.
+  lint:
+    name: lintVital
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          add-job-summary: 'on-failure'
+
+      - run: chmod +x gradlew
+
+      - name: Write local.properties
+        run: |
+          {
+            echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}"
+            echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}"
+          } > local.properties
+
+      # No keystore here: lint never signs. It compiles the release variant and
+      # reads it, which is why this job still costs a compile — it is the same
+      # work the build job is doing at that moment, not extra work on top.
+      - name: Fatal-severity lint
+        run: ./gradlew --build-cache --parallel --console=plain :app:lintVitalDevRelease
+
+      - name: Upload the lint report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          path: |
+            app/build/reports/lint-results-*.html
+            app/build/reports/lint-results-*.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The draft itself: private, untagged, no publish. GitHub creates the tag
+  # only when a draft is published, so nothing is cut here — the draft is a
+  # download, not a release.
+  #
+  # needs: [build, lint] is the whole point of the split: the APK is built
+  # without waiting for lint, but it cannot become a draft unless lint passed.
+  draft:
+    name: Draft the release
+    needs: [build, lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-draft-apk
+          path: dist
+
       - name: Draft the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -406,6 +468,7 @@ jobs:
           NOTES: ${{ inputs.notes }}
         run: |
           set -euo pipefail
+          ls -lh dist
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/*.apk --repo "$GITHUB_REPOSITORY" --clobber
             if [ -n "$NOTES" ]; then
