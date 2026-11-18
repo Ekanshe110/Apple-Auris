@@ -197,7 +197,7 @@ android {
             // release build, and it is the one that most needs the marker.
             if (betaSuffix.isNotEmpty()) versionNameSuffix = "-$betaSuffix"
             /*
-             * On for what it does to speed, not size. Compose is written to be
+             * On by default, for what it does to speed, not size. Compose is written to be
              * run through R8 — without it every composable keeps the debug-era
              * shape the compiler emits, and the whole UI runs measurably slower.
              *
@@ -209,10 +209,16 @@ android {
              * code, which is where the time goes. Checked on a device through the
              * `benchmark` build type below before it ships.
              */
-            isMinifyEnabled = true
+            // [fastApk] is the APK workflow's fast lane: R8 and the resource
+            // shrinker are the ~6 minutes that separate it from a full build,
+            // so it turns both off. The cost is a bigger APK and Compose
+            // running unoptimized; the lint gate, package/version/signature
+            // checks and the class guards are unaffected. Default (no
+            // property) keeps the full build.
+            isMinifyEnabled = !fastApk
             // Drop resources no code references (dead drawables, unused locale
             // variants of drawables, etc.) — pairs with R8 above.
-            isShrinkResources = true
+            isShrinkResources = !fastApk
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

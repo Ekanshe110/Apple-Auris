@@ -23,6 +23,10 @@ on:
         description: "Tag of the private draft release"
         required: true
         default: "v3.1"
+      fast:
+        description: "Skip R8 and resource shrinking for a faster test build"
+        type: boolean
+        default: true
       title:
         description: "Title of the private draft release"
         required: true
@@ -337,9 +341,14 @@ jobs:
       # runner rather than a serial step.
       - name: Build the APKs
         run: |
+          set -euo pipefail
+          args=()
+          if [ "${{ inputs.fast }}" = "true" ]; then
+            args+=("-Pauris.fastApk=true")
+          fi
           ./gradlew \
             --build-cache --parallel --console=plain \
-            -Pauris.fastApk=true \
+            "${args[@]}" \
             :app:assembleDevRelease
 
       - name: Collect
