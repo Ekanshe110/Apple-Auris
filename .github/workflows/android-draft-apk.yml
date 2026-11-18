@@ -339,7 +339,6 @@ jobs:
         run: |
           ./gradlew \
             --build-cache --parallel --console=plain \
-            -x lintVitalAnalyzeRelease -x lintVitalReportRelease -x lintVitalRelease \
             -x lintVitalAnalyzeDevRelease -x lintVitalReportDevRelease -x lintVitalDevRelease \
             :app:assembleDevRelease
 
