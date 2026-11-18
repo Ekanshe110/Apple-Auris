@@ -280,24 +280,28 @@ jobs:
             echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}"
           } > local.properties
 
-      # The fork's key, the same one every private draft since 2.3.x was
-      # signed with — so a tester installs this over the last one without
-      # uninstalling first, and without touching the prod package.
-      - name: Fork signing
+      # This repository's own signing key, generated for Auris Revanced (the
+      # upstream fork's key was not available). Consequence, once: an APK
+      # signed with the old fork certificate cannot be updated over — uninstall
+      # that draft before installing this one. After that every draft from this
+      # repo updates over the last one, and never touches the prod package.
+      # The certificate check further down pins the fingerprint of this key.
+      - name: Signing
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
           set -euo pipefail
-          if [ -z "${KEYSTORE_B64:-}" ]; then
-            echo "::error::ANDROID_KEYSTORE_B64 is not set for this repository. Add the fork keystore (base64) before building, or the APK cannot install over the last draft."
+          if [ -z "${KEYSTORE_B64:-}" ] || [ -z "${KEYSTORE_PASSWORD:-}" ]; then
+            echo "::error::ANDROID_KEYSTORE_B64 / ANDROID_KEYSTORE_PASSWORD are not set for this repository; the APK cannot be signed."
             exit 1
           fi
           echo "$KEYSTORE_B64" | base64 -d > bitchord-fork.jks
           {
             echo "storeFile=bitchord-fork.jks"
-            echo "storePassword=android"
+            echo "storePassword=$KEYSTORE_PASSWORD"
             echo "keyAlias=forkdebug"
-            echo "keyPassword=android"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
           } > keystore.properties
 
       # The version is stamped from the input rather than read out of the
@@ -370,10 +374,10 @@ jobs:
       # The package, the version and the signing certificate, checked before
       # anything is published: a tester installs this over the last draft, so
       # the package has to be the same one, the versionCode has to be higher
-      # than the installed build's, and the certificate has to be the fork's.
+      # than the installed build's, and the certificate has to be this repo's key.
       - name: Check the package, version and signature
         env:
-          EXPECTED_FINGERPRINT: "385af3b4b3f5b4357b7bb271fd71b267fad4d536be87e44f2057b0c2de8971ce"
+          EXPECTED_FINGERPRINT: "f0efd2c7d4ae0ef12f2e24f8a6a677697ceea46e86b4d9de4201e7387c7a5378"
           EXPECTED_PACKAGE: "com.dev.bitchord"
         run: |
           set -euo pipefail
