@@ -41,6 +41,17 @@ import com.music.bitchord.data.settings.MusicProvider
 import com.music.bitchord.data.settings.ProviderAxis
 
 /**
+ * What somebody might type looking for the catalogue switch.
+ *
+ * The service names first, because that is what people look for: they want
+ * "Spotify" or "YouTube" and do not know the app calls the choice a source.
+ */
+internal val PROVIDER_SOURCE_KEYWORDS = arrayOf(
+    "source", "catalogue", "metadata", "lyrics", "artwork",
+    "spotify", "youtube", "youtube music", "apple", "apple music",
+)
+
+/**
  * The Provider category: the three axes, and the master switch over them.
  *
  * The axes are separate because they answer separate questions:
@@ -164,7 +175,11 @@ internal fun ProviderSettings(
         }
 
         val sourceTitle = stringResource(R.string.provider_axis_source)
-        row(sourceTitle, "source", "catalogue", "metadata", "lyrics", "artwork") {
+        // Apple, Spotify and YouTube are named in the keywords because the
+        // catalogue switch used to sit on the settings index, where searching
+        // "Spotify" found it. It lives here now, and typing a service name
+        // should still bring its answer to the top.
+        row(sourceTitle, *PROVIDER_SOURCE_KEYWORDS) {
             ProviderAxisRow(
                 axis = ProviderAxis.SOURCE,
                 icon = Icons.Rounded.LibraryMusic,
