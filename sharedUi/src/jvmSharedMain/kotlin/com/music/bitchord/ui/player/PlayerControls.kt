@@ -28,6 +28,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,6 +40,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.delay
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -57,12 +64,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -491,8 +500,22 @@ private const val TIME_LABEL_ALPHA = 0.5f
 private const val QUALITY_BADGE_ALPHA = 0.82f
 
 /**
+ * Sends the per-song rendition switch to the app hosting the player.
+ *
+ * Null where the platform has no playback service to switch, in which case the
+ * badge keeps its ordinary look.
+ */
+val LocalRenditionSwitch = compositionLocalOf<((String) -> Unit)?> { null }
+
+/**
  * The quality badge between the timestamps — "Lossless", "Hi-Res", a loading
  * shimmer while a lossless source is still being looked for.
+ *
+ * The badge is also the switch: a tap re-opens the track in the other
+ * rendition it has, and the "›" after it says that there is one. The stats
+ * that used to open on a tap of the badge open on a *hold* instead — see
+ * [QUALITY_STATS_HOLD_MS] — because a tap that means two different things
+ * means neither.
  */
 @Composable
 internal fun PlaybackQualityLabel(
@@ -515,26 +538,60 @@ internal fun PlaybackQualityLabel(
     // should keep saying "loading" through that stretch rather than going
     // blank only to possibly say "loading" again a moment later.
     val racingLossless by NerdStats.racingLossless.collectAsStateWithLifecycle()
-    // The badge's own answer: tap it and it says what it means — where the
-    // bytes came from, how many, and in what. A badge is a claim, and this is
-    // the measurement behind it, one tap away rather than in a dialog
-    // somewhere else.
+    // The stats behind the badge. A hold opens them; a tap switches.
     var details by remember { mutableStateOf(false) }
+    // The rendition switch. The cue sits after the badge, because the badge
+    // itself says what is playing and the cue says that there is another
+    // answer to ask for — two different claims, and the cue only appears when
+    // there is one.
+    val switchRendition = LocalRenditionSwitch.current
+    val currentRendition = when {
+        nerdStats?.isDolbyAtmos == true -> "atmos"
+        nerdStats?.isHiRes == true -> "hires"
+        nerdStats?.isLossless == true -> "lossless"
+        else -> null
+    }
+    val targetRendition = when (currentRendition) {
+        "atmos" -> if (song.atmosAvailable) "lossless" else null
+        "hires" -> if (song.hiResAvailable) "lossless" else null
+        "lossless" -> when {
+            song.atmosAvailable -> "atmos"
+            song.hiResAvailable -> "hires"
+            else -> null
+        }
+        else -> null
+    }
+    val renditionSwitchable = switchRendition != null && targetRendition != null
     Box(modifier = modifier.fillMaxHeight(), contentAlignment = Alignment.Center) {
-        LosslessOrStats(
-            isLoading = isLoading,
-            stillRacing = song.videoId in racingLossless,
-            losslessRequested = effectiveQuality == AudioQuality.LOSSLESS,
-            effectiveQuality = effectiveQuality,
-            nerdStats = nerdStats,
-            // The whole slot's height, and some width either side of the word,
-            // is the target. The padding is inside the clickable so it adds to
-            // what a finger can hit. See [SCRUBBER_LABEL_SLOT].
-            modifier = Modifier
-                .fillMaxHeight()
-                .clickable(enabled = nerdStats != null) { details = true }
-                .padding(horizontal = QUALITY_BADGE_TAP_PADDING),
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            LosslessOrStats(
+                isLoading = isLoading,
+                stillRacing = song.videoId in racingLossless,
+                losslessRequested = effectiveQuality == AudioQuality.LOSSLESS,
+                effectiveQuality = effectiveQuality,
+                nerdStats = nerdStats,
+                // The whole slot's height, and some width either side of the word,
+                // is the target. The padding is inside the gesture so it adds to
+                // what a finger can hit. See [SCRUBBER_LABEL_SLOT].
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .qualityBadgeGestures(
+                        onHold = { details = true },
+                        onTap = {
+                            if (renditionSwitchable) switchRendition?.invoke(targetRendition)
+                        },
+                    )
+                    .padding(horizontal = QUALITY_BADGE_TAP_PADDING),
+            )
+            if (renditionSwitchable) {
+                Text(
+                    text = "›",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 2.dp, end = QUALITY_BADGE_TAP_PADDING),
+                )
+            }
+        }
         val measured = nerdStats
         if (details && measured != null) {
             Popup(
@@ -544,6 +601,57 @@ internal fun PlaybackQualityLabel(
             ) {
                 QualityDetailsCard(stats = measured)
             }
+        }
+    }
+}
+
+/**
+ * How long the quality badge has to be held for the stats to open.
+ *
+ * A second, so that a tap — which switches the rendition — is never mistaken
+ * for a hold, and so that a hold is deliberate rather than a brush on the way
+ * past the badge.
+ */
+private const val QUALITY_STATS_HOLD_MS = 1_000L
+
+/**
+ * The badge's two gestures: a tap switches the rendition, a hold opens the
+ * stats.
+ *
+ * Written by hand rather than with `combinedClickable`, because the platform's
+ * long-press threshold is half a second — too short to tell a hold from a
+ * slow tap, and the badge now has two meanings to tell apart.
+ */
+@Composable
+private fun Modifier.qualityBadgeGestures(
+    onHold: () -> Unit,
+    onTap: () -> Unit,
+): Modifier {
+    // The gestures are read through remembered state, so a recomposition
+    // mid-gesture cannot leave the player answering an older question.
+    val hold by rememberUpdatedState(onHold)
+    val tap by rememberUpdatedState(onTap)
+    return pointerInput(Unit) {
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false)
+            // Wait for the finger to come up.  A timeout means it was held
+            // for the whole second, which is the hold; an early release is a
+            // tap.
+            var released = false
+            try {
+                withTimeout(QUALITY_STATS_HOLD_MS) {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Main)
+                        if (event.changes.any { it.changedToUpIgnoreConsumed() }) {
+                            released = true
+                            break
+                        }
+                    }
+                }
+            } catch (timeout: TimeoutCancellationException) {
+                released = false
+            }
+            if (released) tap() else hold()
         }
     }
 }

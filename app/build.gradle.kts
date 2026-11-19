@@ -34,6 +34,7 @@ val lastfmSecret: String = (
         ?: ""
     ).trim()
 
+
 /*
  * Where Listen Together's party server lives. Not a credential — it is a public
  * URL, and every device in a party has to be pointed at the same one — but it is
@@ -99,6 +100,9 @@ val universalApk = providers.gradleProperty("auris.universal").orNull?.toBoolean
  * still runs lintVital as AGP intends.
  */
 val fastApk = providers.gradleProperty("auris.fastApk").orNull == "true"
+// Audio-probe tracing is only useful in the fast test build; it stays out of
+// the shipping build's BuildConfig.
+val audioProbe = fastApk
 
 android {
     namespace = "com.music.bitchord"
@@ -116,8 +120,10 @@ android {
         // Haze falls back to a translucent scrim below that.
         minSdk = 26
         targetSdk = 36
-        versionCode = 134
-        versionName = "3.0.29"
+        versionCode = 164
+        versionName = "3.1.7"
+
+        buildConfigField("boolean", "AUDIO_PROBE", audioProbe.toString())
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -161,7 +167,10 @@ android {
         create("dev") {
             dimension = "env"
             applicationId = "com.dev.bitchord"
-            resValue("string", "app_name", "Auris")
+            // The dev build wears the same name as the app it is: the label
+            // is what the launcher shows, and "Auris" on a build of Appix is
+            // somebody else's name on our icon.
+            resValue("string", "app_name", "Auris Revanced")
         }
         create("prod") {
             dimension = "env"

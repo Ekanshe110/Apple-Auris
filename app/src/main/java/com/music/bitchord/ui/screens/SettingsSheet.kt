@@ -328,6 +328,12 @@ fun SettingsScreen(
                 onEqualizer = onEqualizer,
             )
         }
+        if (shows(SettingsCategory.PROVIDER)) {
+            ProviderSettings(
+                search = search,
+                sheets = sheets,
+            )
+        }
         if (shows(SettingsCategory.PLAYBACK)) {
             PlaybackSettings(
                 search = search,
@@ -962,6 +968,7 @@ private val SettingsCategory.icon: ImageVector
         SettingsCategory.ACCOUNT -> Icons.Rounded.Person
         SettingsCategory.AUDIO -> Icons.Rounded.GraphicEq
         SettingsCategory.PLAYBACK -> Icons.Rounded.PlayArrow
+        SettingsCategory.PROVIDER -> Icons.Rounded.MusicNote
         SettingsCategory.DOWNLOADS -> Icons.Rounded.Download
         SettingsCategory.NOW_PLAYING -> Icons.Rounded.MusicNote
         SettingsCategory.HOME_LIBRARY -> Icons.Rounded.Home

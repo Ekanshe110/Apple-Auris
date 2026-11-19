@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Auris</string>
+    <string name="app_name">Appix</string>
     <string name="automix_analysis_menu">Automix 分析</string>
     <string name="playback_channel_name">正在播放</string>
     <string name="download_channel_name">下载</string>

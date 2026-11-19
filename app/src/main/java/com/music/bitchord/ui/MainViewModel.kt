@@ -34,6 +34,11 @@ import com.music.bitchord.data.lyrics.LyricsRepository
 import com.music.bitchord.data.lyrics.LyricsSource
 import com.music.bitchord.data.settings.AppSettings
 import com.music.bitchord.data.settings.HomeProvider
+import com.music.bitchord.data.settings.MusicProvider
+import com.music.bitchord.data.apple.song
+import com.music.bitchord.data.apple.shelfItem
+import com.music.bitchord.data.apple.station
+import com.music.bitchord.data.model.RadioStation
 import com.music.bitchord.data.spotify.SpotifyHomeSource
 import com.music.bitchord.data.settings.withoutBlockedArtists
 import com.music.bitchord.data.settings.withoutBlockedRecommendations
@@ -44,6 +49,7 @@ import com.music.bitchord.auth.CapturedSession
 import com.music.bitchord.auth.WebSessionMode
 import com.music.bitchord.data.model.Account
 import com.music.bitchord.data.model.AccountChannel
+import com.music.bitchord.data.model.AppleLibraryContent
 import com.music.bitchord.data.model.BrowseType
 import com.music.bitchord.data.model.BrowseItem
 import com.music.bitchord.data.model.DetailPage
@@ -144,8 +150,31 @@ enum class SearchSource {
     /** Spotify's own catalogue, read through the web player's backend. */
     SPOTIFY,
 
+    /** Apple Music's own catalogue, read through an installed manifest. */
+    APPLE,
+
     /** The Local Music folder on this device. */
     LIBRARY,
+    ;
+
+    companion object {
+        /**
+         * The sources in the order they are offered.
+         *
+         * The catalogue the source axis points at comes first — it is the one
+         * the listener asked for — and the device's own library comes last,
+         * because it is not a catalogue at all but the one answer that needs
+         * no network and no account.
+         *
+         * The order is not the enum's order: a segmented control that always
+         * drew YouTube first would put the chosen catalogue second, which is
+         * the one place it could not be.
+         */
+        fun ordered(selected: SearchSource): List<SearchSource> {
+            val rest = entries.filter { it != selected && it != LIBRARY }
+            return listOf(selected) + rest + LIBRARY
+        }
+    }
 }
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -265,6 +294,376 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _explore = MutableStateFlow<UiState<List<MoodGenreSection>>>(UiState.Loading)
     val explore: StateFlow<UiState<List<MoodGenreSection>>> = _explore.asStateFlow()
+
+    /**
+     * Apple's own library — its playlists, albums and songs — for the Library
+     * page under Apple's look.
+     *
+     * Apple's library is the listener's own: their playlists, their albums,
+     * their songs. Under Apple's look the page shows Apple's library and
+     * nothing else, because a page that mixed YouTube's library into
+     * Apple's is not Apple's page and not YouTube's either.
+     */
+    private val _appleLibrary = MutableStateFlow<UiState<AppleLibraryContent>>(UiState.Loading)
+    val appleLibrary: StateFlow<UiState<AppleLibraryContent>> = _appleLibrary.asStateFlow()
+
+    /**
+     * Reads Apple's library: the playlists, the albums and the songs, each
+     * as the rows Apple's own page draws them.
+     */
+    fun loadAppleLibrary() {
+        _appleLibrary.value = UiState.Loading
+        viewModelScope.launch {
+            val handle = com.music.bitchord.data.apple.AppleSources.handle()
+            if (handle == null) {
+                _appleLibrary.value = UiState.Error(text(R.string.provider_apple_manifest_missing_subtitle))
+                return@launch
+            }
+            val playlists = com.music.bitchord.data.apple.AppleSources.libraryPlaylists(handle)
+                .getOrElse { failure ->
+                    _appleLibrary.value = UiState.Error(failure.friendly())
+                    return@launch
+                }
+            val albums = com.music.bitchord.data.apple.AppleSources.libraryAlbums(handle)
+                .getOrDefault(emptyList())
+            val songs = com.music.bitchord.data.apple.AppleSources.librarySongs(handle)
+                .getOrDefault(emptyList())
+            _appleLibrary.value = if (playlists.isEmpty() && albums.isEmpty() && songs.isEmpty()) {
+                UiState.Error(text(R.string.apple_library_empty))
+            } else {
+                UiState.Success(
+                    AppleLibraryContent(
+                        // Apple's own order is kept: what was added recently
+                        // comes first, and the list below is the whole of it.
+                        recentlyAdded = playlists.take(8),
+                        albums = albums,
+                        songs = songs,
+                        playlists = playlists,
+                    ),
+                )
+            }
+        }
+    }
+
+    /**
+     * Apple's own playlists, for the "add to playlist" sheet.
+     *
+     * The listener's own playlists, as the picker shows them. Under the Apple
+     * source axis the picker lists these and writes to these — a playlist
+     * belonging to another service would be a dead end for an Apple row.
+     */
+    private val _applePlaylists = MutableStateFlow<List<UserPlaylist>>(emptyList())
+    val applePlaylists: StateFlow<List<UserPlaylist>> = _applePlaylists.asStateFlow()
+
+    private val _applePlaylistsLoading = MutableStateFlow(false)
+    val applePlaylistsLoading: StateFlow<Boolean> = _applePlaylistsLoading.asStateFlow()
+
+    /** Reads Apple's playlists for the picker. */
+    fun loadApplePlaylists() {
+        if (_applePlaylistsLoading.value) return
+        _applePlaylistsLoading.value = true
+        viewModelScope.launch {
+            val handle = com.music.bitchord.data.apple.AppleSources.handle()
+            val rows = if (handle == null) {
+                emptyList()
+            } else {
+                com.music.bitchord.data.apple.AppleSources.library(handle, "playlists")
+                    .getOrDefault(emptyList())
+                    .map { item ->
+                        UserPlaylist(
+                            playlistId = item.id,
+                            title = item.title,
+                            subtitle = item.artist.ifBlank { item.album },
+                            thumbnailUrl = item.artworkURL,
+                        )
+                    }
+            }
+            _applePlaylists.value = rows
+            _applePlaylistsLoading.value = false
+        }
+    }
+
+    /**
+     * Files songs in one Apple Music playlist.
+     *
+     * Only the songs that are Apple's own rows can be filed: an Apple
+     * playlist holds Apple catalogue ids, and a row from another catalogue
+     * has none. The callback says how many went in and how many could not,
+     * the same way the other path does.
+     */
+    fun addSongsToApplePlaylist(
+        playlists: List<UserPlaylist>,
+        songs: List<Song>,
+        onResult: (added: Int, failed: Int) -> Unit,
+    ) {
+        viewModelScope.launch {
+            val handle = com.music.bitchord.data.apple.AppleSources.handle()
+            if (handle == null) {
+                onResult(0, songs.size)
+                return@launch
+            }
+            val ids = songs.mapNotNull { song ->
+                val parsed = com.music.bitchord.data.sources.SourceRegistry.parseTrackKey(song.videoId)
+                if (parsed != null && parsed.first == handle.configId) parsed.second else null
+            }
+            if (ids.isEmpty()) {
+                onResult(0, songs.size)
+                return@launch
+            }
+            // Each ticked playlist is filed separately: Apple files one
+            // playlist at a time, and a row goes into every playlist that
+            // was ticked.
+            var added = 0
+            var failed = 0
+            for (playlist in playlists) {
+                val written = com.music.bitchord.data.apple.AppleCatalogue
+                    .addToPlaylist(handle.baseUrl, playlist.playlistId, ids)
+                    .isSuccess
+                if (written) added += ids.size else failed += ids.size
+            }
+            if (playlists.isEmpty()) {
+                onResult(0, songs.size)
+            } else {
+                onResult(added, failed)
+            }
+        }
+    }
+
+    /**
+     * Creates a playlist of the listener's own and files the rows in it.
+     *
+     * Apple's own playlists, made the way Apple's own app makes them: the
+     * playlist is created first and the tracks go into it afterwards, so the
+     * listener sees one playlist at the end rather than a new empty one and a
+     * second step.
+     */
+    fun createApplePlaylist(
+        title: String,
+        songs: List<Song>,
+        onResult: (added: Int, failed: Int) -> Unit,
+    ) {
+        viewModelScope.launch {
+            val handle = com.music.bitchord.data.apple.AppleSources.handle()
+            if (handle == null) {
+                onResult(0, songs.size)
+                return@launch
+            }
+            val created = com.music.bitchord.data.apple.AppleCatalogue
+                .createPlaylist(handle.baseUrl, title)
+                .getOrNull()
+            val playlistId = created?.id
+            if (created?.ok != true || playlistId.isNullOrBlank()) {
+                onResult(0, songs.size)
+                return@launch
+            }
+            val ids = songs.mapNotNull { song ->
+                val parsed = com.music.bitchord.data.sources.SourceRegistry.parseTrackKey(song.videoId)
+                if (parsed != null && parsed.first == handle.configId) parsed.second else null
+            }
+            var added = 0
+            if (ids.isNotEmpty()) {
+                val written = com.music.bitchord.data.apple.AppleCatalogue
+                    .addToPlaylist(handle.baseUrl, playlistId, ids)
+                    .isSuccess
+                if (written) added = ids.size
+            }
+            // The list the picker shows is the listener's own, and it has
+            // just changed: it is read again, or the new playlist is missing
+            // from the list it was made in.
+            loadApplePlaylists()
+            onResult(added, songs.size - added)
+        }
+    }
+
+    /**
+     * Apple's own stations, for the Radio page under Apple's look.
+     * Apple's radio is its stations: the live ones Apple's player holds
+     * under Widevine, and the seeded ones it builds from an artist, a genre
+     * or a song. No Flow and no "search a station" — neither is Apple's, and
+     * a page that offers them is not Apple's page.
+     */
+    private val _appleRadio = MutableStateFlow<UiState<List<RadioStation>>>(UiState.Loading)
+    val appleRadio: StateFlow<UiState<List<RadioStation>>> = _appleRadio.asStateFlow()
+
+    /**
+     * The stations other broadcasters run, for the Radio page under Apple's
+     * look.
+     *
+     * Apple's own page keeps them in a row of their own, under the name of
+     * whoever runs them.
+     */
+    /**
+     * Apple's own Radio page, as its sections of stations and playlists.
+     */
+    private val _appleRadioShelves =
+        MutableStateFlow<UiState<List<com.music.bitchord.data.model.AppleRadioShelf>>>(UiState.Loading)
+    val appleRadioShelves: StateFlow<UiState<List<com.music.bitchord.data.model.AppleRadioShelf>>> =
+        _appleRadioShelves.asStateFlow()
+
+    /** The sections of Apple's Radio page, or none when they are not in yet. */
+    val appleRadioShelvesList: List<com.music.bitchord.data.model.AppleRadioShelf>
+        get() = (_appleRadioShelves.value as? UiState.Success)?.data.orEmpty()
+
+    private val _appleInternationalRadio = MutableStateFlow<UiState<List<RadioStation>>>(UiState.Loading)
+    val appleInternationalRadio: StateFlow<UiState<List<RadioStation>>> =
+        _appleInternationalRadio.asStateFlow()
+
+    /**
+     * Reads Apple's stations: the listener's own, the editorial ones and the
+     * live ones, in Apple's own order.
+     */
+    fun loadAppleRadio() {
+        _appleRadio.value = UiState.Loading
+        viewModelScope.launch {
+            val handle = com.music.bitchord.data.apple.AppleSources.handle()
+            if (handle == null) {
+                _appleRadio.value = UiState.Error(text(R.string.provider_apple_manifest_missing_subtitle))
+                return@launch
+            }
+            val stations = com.music.bitchord.data.apple.AppleSources.stations(handle)
+                .getOrElse { failure ->
+                    _appleRadio.value = UiState.Error(failure.friendly())
+                    return@launch
+                }
+            val live = com.music.bitchord.data.apple.AppleSources.liveStations(handle).getOrDefault(emptyList())
+            val rows = (stations + live).distinctBy { it.id }.map { it.station() }
+            _appleRadio.value = if (rows.isEmpty()) {
+                UiState.Error(text(R.string.apple_radio_empty))
+            } else {
+                UiState.Success(rows)
+            }
+            // The international row is read alongside: a page that showed
+            // Apple's own stations and left the others out would be a
+            // shorter page than Apple's, and the others are live too.
+            com.music.bitchord.data.apple.AppleSources.internationalStations(handle)
+                .onSuccess { international ->
+                    _appleInternationalRadio.value = UiState.Success(international)
+                }
+                .onFailure {
+                    _appleInternationalRadio.value = UiState.Success(emptyList())
+                }
+            // Apple's own sections of the page: the stations by genre, the
+            // sessions, the mixes, the interviews and the shows.
+            com.music.bitchord.data.apple.AppleSources.radioShelves(handle)
+                .onSuccess { shelves ->
+                    _appleRadioShelves.value = UiState.Success(shelves)
+                }
+                .onFailure {
+                    _appleRadioShelves.value = UiState.Success(emptyList())
+                }
+        }
+    }
+
+    /**
+     * Apple's browse page — the New tab.
+     *
+     * Apple's own groups, read from Apple's catalogue: a page of the
+     * catalogue rather than a page of the listener's history, which is what
+     * makes it Apple's browse and not a second Home.
+     */
+    /**
+     * Whether a row is one Apple's own catalogue holds.
+     *
+     * The rule the "only Apple Music" switch is made of: a row that came
+     * from Apple's catalogue is kept, and a row from anywhere else is not.
+     */
+    fun isAppleRow(song: Song): Boolean {
+        val parsed = com.music.bitchord.data.sources.SourceRegistry.parseTrackKey(song.videoId)
+        if (parsed == null) return false
+        return com.music.bitchord.data.apple.AppleManifestLocator.isAppleConfigCached(parsed.first) == true
+    }
+
+    /**
+     * Keeps only the rows Apple's catalogue holds, when the listener asked
+     * for that.
+     *
+     * The switch says what the app is allowed to play, so it is applied to
+     * the list before it is queued rather than to each row as it plays: a
+     * row that is not in Apple's catalogue is not offered at all.
+     */
+    fun keepOnlyAppleRows(songs: List<Song>): List<Song> {
+        // The rule belongs to Apple's look: with the look off, the app is
+        // Auris's again and it plays what it has always played.
+        if (!AppSettings.appleCatalogueOnly) return songs
+        val kept = songs.filter { isAppleRow(it) }
+        return kept.ifEmpty { songs }
+    }
+
+    private val _appleBrowse = MutableStateFlow<UiState<List<HomeShelf>>>(UiState.Loading)
+    val appleBrowse: StateFlow<UiState<List<HomeShelf>>> = _appleBrowse.asStateFlow()
+
+    /**
+     * Reads Apple's browse groups for the New tab.
+     */
+    fun loadAppleBrowse() {        _appleBrowse.value = UiState.Loading
+        viewModelScope.launch {
+            val handle = com.music.bitchord.data.apple.AppleSources.handle()
+            if (handle == null) {
+                _appleBrowse.value =
+                    UiState.Error(text(R.string.provider_apple_manifest_missing_subtitle))
+                return@launch
+            }
+            com.music.bitchord.data.apple.AppleSources.browseShelves(handle)
+                .onSuccess { shelves ->
+                    _appleBrowse.value = if (shelves.isEmpty()) {
+                        UiState.Error(text(R.string.apple_browse_empty))
+                    } else {
+                        UiState.Success(shelves)
+                    }
+                }
+                .onFailure { failure ->
+                    _appleBrowse.value = UiState.Error(failure.friendly())
+                }
+        }
+    }
+
+    /**
+     * Loads Apple's browse page once, the first time the tab becomes visible.
+     *
+     * A later failure is left to the page's own Retry, the same rule the
+     * radio page follows: a network page nobody opened should not be on the
+     * wire before it is asked for.
+     */
+    fun ensureAppleBrowseLoaded() {
+        if (appleBrowseRequested) return
+        appleBrowseRequested = true
+        loadAppleBrowse()
+    }
+
+    private var appleBrowseRequested = false
+
+    /**
+     * The songs of one Apple station — what plays after the seed.
+     *
+     * Null for a station with no queue of its own, which is what a live
+     * station is: its audio is a continuous stream rather than a list.
+     */
+    suspend fun appleStationSongs(stationId: String): List<Song>? {
+        val handle = com.music.bitchord.data.apple.AppleSources.handle() ?: return null
+        val items = com.music.bitchord.data.apple.AppleSources.stationTracks(handle, stationId)
+            .getOrNull()
+            .orEmpty()
+        if (items.isEmpty()) return null
+        return items.map { it.song(handle.configId) }
+    }
+
+    /**
+     * One live Apple station, as a row this app can play.
+     *
+     * A live station plays here rather than in Apple's own app: the addon
+     * publishes the stream and the license endpoint, the device does the
+     * Widevine handshake, and nothing is handed to a browser. Null when the
+     * station cannot be played — which is a failure the caller has to say
+     * out loud, not a reason to open anything else.
+     */
+    suspend fun appleLiveStationSong(station: RadioStation): Song? {
+        val handle = com.music.bitchord.data.apple.AppleSources.handle() ?: return null
+        val live = com.music.bitchord.data.apple.AppleCatalogue
+            .liveStream(handle.baseUrl, station.id)
+            .getOrNull() ?: return null
+        if (live.streamURL.isBlank()) return null
+        return live.song(handle, station)
+    }
 
     /**
      * The podcast shows the account follows.
@@ -1254,6 +1653,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun toggleLike(song: Song) {
         if (!requireSignIn()) return
+        // An Apple row is rated in Apple's own ratings, through the installed
+        // manifest — the source axis decides which service owns the heart.
+        if (AppSettings.providerAxes.value.source == MusicProvider.APPLE) {
+            viewModelScope.launch {
+                if (rateAppleRow(song)) return@launch
+                rateSongInYouTube(song)
+            }
+            return
+        }
+        rateSongInYouTube(song)
+    }
+
+    /** The heart for a row that is not Apple's: YouTube's own rating. */
+    private fun rateSongInYouTube(song: Song) {
         if (!RatingTarget.isRowId(song.videoId)) {
             toggleLike(song.videoId)
             return
@@ -1261,6 +1674,45 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val previous = likeStatusOf(song)
         val target = if (previous == LikeStatus.LIKE) LikeStatus.INDIFFERENT else LikeStatus.LIKE
         rateRow(song, target)
+    }
+
+    /**
+     * Rates an Apple row in Apple, and says whether it did.
+     *
+     * Two things happen when the heart comes off an Apple row. The rating is
+     * taken back, so the row is no longer a favourite — and the row is taken
+     * out of Apple's *Favourite Songs* playlist as well. Apple's own app
+     * keeps the two in step, and a row that stays in the playlist after the
+     * heart has gone is a row the listener can still find in their library
+     * and cannot explain.
+     *
+     * False for a row that is not Apple's, and for an install with no Apple
+     * Music manifest — in which case the caller's own path runs.
+     */
+    private suspend fun rateAppleRow(song: Song): Boolean {
+        val handle = com.music.bitchord.data.apple.AppleSources.handle() ?: return false
+        val parsed = com.music.bitchord.data.sources.SourceRegistry.parseTrackKey(song.videoId)
+            ?: return false
+        if (parsed.first != handle.configId) return false
+        val appleId = parsed.second
+        val previous = likeStatusOf(song)
+        val liked = previous != LikeStatus.LIKE
+        // The heart is written to the screen first and rolled back if Apple
+        // refuses, the same as everywhere else.
+        LikeState.set(song.videoId, if (liked) LikeStatus.LIKE else LikeStatus.INDIFFERENT)
+        val written = com.music.bitchord.data.apple.AppleCatalogue
+            .setFavourite(handle.baseUrl, appleId, liked)
+            .isSuccess
+        if (!written) {
+            LikeState.set(song.videoId, previous)
+            return true
+        }
+        if (!liked) {
+            // Off the heart, out of Favourite Songs.
+            com.music.bitchord.data.apple.AppleCatalogue
+                .removeFromFavourites(handle.baseUrl, listOf(appleId))
+        }
+        return true
     }
 
     /**
@@ -2203,6 +2655,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Call when the library tab becomes visible. */
     fun onLibraryShown() {
+        // Under Apple's look the page is Apple's library: the listener's own
+        // playlists, read through the installed manifest.
+        if (AppSettings.providerAxes.value.ui == MusicProvider.APPLE) {
+            loadAppleLibrary()
+            return
+        }
         loadPlaylists()
         if (!libraryStale) return
         libraryStale = false
@@ -2224,6 +2682,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // is a surprise; the switcher is still there to pick another.
         if (AppSettings.homeProvider.value == HomeProvider.SPOTIFY) {
             _searchSource.value = SearchSource.SPOTIFY
+        }
+        // The same for Apple: the source axis points at Apple's catalogue, so
+        // the search tab opens on Apple's too. The others stay reachable from
+        // the switcher, and Apple's own manifest decides whether it can answer
+        // at all — a manifest that is not installed says so rather than
+        // answering from somewhere else.
+        if (AppSettings.providerAxes.value.source == MusicProvider.APPLE) {
+            _searchSource.value = SearchSource.APPLE
         }
         startSearchPipeline()
         startSuggestPipeline()
@@ -2409,8 +2875,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             when (feed) {
                 Feed.HOME -> refreshHome(identity)
-                Feed.EXPLORE -> fetchExplore()
-                Feed.LIBRARY -> fetchLibrary(identity)
+                Feed.EXPLORE -> if (AppSettings.providerAxes.value.ui == MusicProvider.APPLE) {
+                    loadAppleRadio()
+                } else {
+                    fetchExplore()
+                }
+                Feed.LIBRARY -> if (AppSettings.providerAxes.value.ui == MusicProvider.APPLE) {
+                    loadAppleLibrary()
+                } else {
+                    fetchLibrary(identity)
+                }
                 Feed.PODCASTS -> {
                     fetchPodcasts()
                     ensurePodcastSectionsFetched(force = true)
@@ -2425,6 +2899,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _explore.value = UiState.Loading
         viewModelScope.launch { fetchExplore() }
     }
+
+    /**
+     * The Radio page's own load, under Apple's look.
+     *
+     * Apple's stations are read when the tab is first shown, the same way
+     * YouTube's explore page is — a network page nobody may open should not
+     * be on the wire before the home feed has landed.
+     */
+    fun loadRadio() {
+        if (AppSettings.providerAxes.value.ui == MusicProvider.APPLE) {
+            loadAppleRadio()
+            return
+        }
+        loadExplore()
+    }
+
+    /**
+     * Loads the radio page once, the first time the tab becomes visible.
+     *
+     * A later failure is left to the page's own Retry rather than re-read on
+     * every tab switch — the same rule the explore page follows.
+     */
+    fun ensureRadioLoaded() {
+        if (radioRequested) return
+        radioRequested = true
+        loadRadio()
+    }
+
+    private var radioRequested = false
 
     /** Loads the podcast feed, once; later failures wait for the page's Retry. */
     fun ensurePodcastsLoaded() {
@@ -2722,6 +3225,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // whole page is not its answer.
         val cacheOwner = homeCacheOwner(identity)
         if (homeFacet.value.isEmpty()) restoreHomeCache(identity, generation, cacheOwner)
+        // Apple's own recommendations, when the recommendation axis points at
+        // Apple. This is the *algorithm* axis: Apple's rows are what Home
+        // suggests, and they may still be played from any source — the source
+        // axis is a separate question, answered separately.
+        //
+        // It is asked first, before the older single-catalogue setting: an
+        // axis that names Apple is a newer promise than a setting that was
+        // left on Spotify, and the page must not be Spotify's while the axes
+        // say Apple's.
+        if (AppSettings.providerAxes.value.recommendation == MusicProvider.APPLE) {
+            _homePendingShelves.value = 0
+            _homeRecentlyPlayedLoading.value = false
+            loadAppleHome(identity, generation)
+            return
+        }
         if (AppSettings.homeProvider.value == HomeProvider.SPOTIFY) {
             _homePendingShelves.value = 0
             _homeRecentlyPlayedLoading.value = false
@@ -2802,7 +3320,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** The catalogue's name for [HomeFeedCache]: one kept page each. */
-    private fun homeCatalogue(): String = AppSettings.homeProvider.value.name
+    private fun homeCatalogue(): String = when (AppSettings.providerAxes.value.recommendation) {
+        MusicProvider.APPLE -> MusicProvider.APPLE.name
+        MusicProvider.SPOTIFY -> HomeProvider.SPOTIFY.name
+        MusicProvider.YOUTUBE -> HomeProvider.YOUTUBE.name
+    }
 
     /**
      * Whose page a kept home page is: the listener, and on Spotify the Spotify
@@ -2813,7 +3335,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun homeCacheOwner(identity: String?): String {
         val listener = identity ?: "guest"
-        if (AppSettings.homeProvider.value != HomeProvider.SPOTIFY) return listener
+        if (AppSettings.providerAxes.value.recommendation != MusicProvider.SPOTIFY) return listener
         val spotify = AppSettings.spotifySpdcToken.value.ifBlank { "visitor" }
         return "$listener|spotify:$spotify"
     }
@@ -2916,6 +3438,41 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             publishHomeShelves(outcome.shelves)
             if (outcome.shelves.isEmpty()) publishHeaderOnlyHome()
             keepHomeCache(identity, generation, cacheOwner)
+        }
+    }
+
+    /**
+     * Apple's own recommendations, as the home page.
+     *
+     * Apple's home is a fixed set of shelves read once — it does not page —
+     * so nothing here waits for a continuation. Without an installed Apple
+     * Music manifest there is no Apple catalogue to read, and the page says
+     * so rather than showing another catalogue's rows under Apple's heading.
+     */
+    private fun loadAppleHome(identity: String?, generation: Long) {
+        homeContinuation = null
+        viewModelScope.launch {
+            val handle = com.music.bitchord.data.apple.AppleSources.handle()
+            if (!isCurrentHomeLoad(identity, generation)) return@launch
+            if (handle == null) {
+                _home.value = UiState.Error(text(R.string.provider_apple_manifest_missing_subtitle))
+                return@launch
+            }
+            com.music.bitchord.data.apple.AppleSources.home(handle)
+                .onSuccess { shelves ->
+                    if (!isCurrentHomeLoad(identity, generation)) return@onSuccess
+                    if (shelves.isEmpty()) {
+                        _home.value = UiState.Error(text(R.string.apple_home_empty))
+                        return@onSuccess
+                    }
+                    _homeHeader.value = null
+                    publishHomeShelves(shelves)
+                }
+                .onFailure { failure ->
+                    if (isCurrentHomeLoad(identity, generation)) {
+                        _home.value = UiState.Error(failure.friendly())
+                    }
+                }
         }
     }
 
@@ -3358,6 +3915,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // Music's, and YouTube Music's completions under a Spotify search
         // are answers from the wrong catalogue.
         if (_searchSource.value == SearchSource.SPOTIFY) return
+        // Apple's completions are not read here either: the pipeline that
+        // would answer them is YouTube's, and YouTube's answers under an
+        // Apple search are answers from the wrong catalogue.
+        if (_searchSource.value == SearchSource.APPLE) return
         // While typing, surface text completions — the pipeline already feeds
         // them through [suggestRequests] and publishes results via typeahead.
         suggestRequests.tryEmit(newValue)
@@ -3396,6 +3957,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // Spotify has no videos tab, and a filter the request does
                 // not honour is a filter that lies: the pill says one thing
                 // and the list answers another.
+                if (_filter.value == SearchFilter.VIDEOS) _filter.value = SearchFilter.ALL
+                submitSearch()
+            }
+            SearchSource.APPLE -> {
+                // Apple publishes no videos either, and its own filters are
+                // albums, playlists and artists rather than YouTube's.
                 if (_filter.value == SearchFilter.VIDEOS) _filter.value = SearchFilter.ALL
                 submitSearch()
             }
@@ -3568,6 +4135,53 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                     "Spotify found nothing for \"" + request.query +
                                         "\" — " + spotify.diagnostic,
                                 )
+                            }
+                        },
+                        onFailure = { failure -> UiState.Error(failure.friendly()) },
+                    )
+                    return@collectLatest
+                }
+
+                // Apple's own catalogue, read through the installed Apple
+                // Music manifest. The rows are Apple's rows: its songs carry
+                // Apple's catalogue id, so they play from the manifest that
+                // published them, and its albums and playlists open Apple's
+                // own pages.
+                if (request.source == SearchSource.APPLE) {
+                    val handle = com.music.bitchord.data.apple.AppleSources.handle()
+                    if (request.requestId != newestRequestId.get()) return@collectLatest
+                    if (handle == null) {
+                        _results.value = UiState.Error(text(R.string.provider_apple_manifest_missing_subtitle))
+                        return@collectLatest
+                    }
+                    val types = when (request.filter) {
+                        SearchFilter.SONGS -> "songs"
+                        SearchFilter.ALBUMS -> "albums"
+                        SearchFilter.PLAYLISTS -> "playlists"
+                        SearchFilter.ARTISTS -> "artists"
+                        else -> "songs,albums,playlists,artists"
+                    }
+                    val page = com.music.bitchord.data.apple.AppleSources.search(
+                        handle = handle,
+                        query = request.query,
+                        types = types,
+                    )
+                    if (request.requestId != newestRequestId.get()) return@collectLatest
+                    _results.value = page.fold(
+                        onSuccess = { rows ->
+                            val published = publishedRows(
+                                rows = rows,
+                                continuation = null,
+                                nextOffset = null,
+                                key = key,
+                                requestId = request.requestId,
+                                filter = request.filter,
+                                source = request.source,
+                            )
+                            if (published is UiState.Success) {
+                                published
+                            } else {
+                                UiState.Error(text(R.string.no_results))
                             }
                         },
                         onFailure = { failure -> UiState.Error(failure.friendly()) },
@@ -4054,6 +4668,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             openSpotifyCollection(browseId, title, subtitle, thumbnailUrl)
             return
         }
+        // Apple's own pages: a library playlist, an album, an artist. They are
+        // read through the installed Apple Music manifest, and the rows they
+        // return are Apple's rows — its own titles, covers and catalogue ids.
+        if (browseId.startsWith(com.music.bitchord.data.apple.AppleSources.PAGE_PREFIX) ||
+            browseId.startsWith(com.music.bitchord.data.apple.AppleSources.ALBUM_PREFIX) ||
+            browseId.startsWith(com.music.bitchord.data.apple.AppleSources.ARTIST_PREFIX) ||
+            browseId.startsWith(com.music.bitchord.data.apple.AppleSources.LIB_ALBUM_PREFIX)
+        ) {
+            openApplePage(browseId, title, subtitle, thumbnailUrl)
+            return
+        }
         val resolved = browseTypeOf(browseId, type)
         _detailStack.value += DetailPage(
             browseId = browseId,
@@ -4291,6 +4916,90 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * then arrive in order and swap the rows in place, so the page is usable
      * before the last song has been found.
      */
+    /**
+     * An Apple Music page: a library playlist, an album or an artist.
+     *
+     * The rows are Apple's own. A song read here carries Apple's catalogue
+     * id, so playing one asks the manifest that published it for the audio
+     * by that id — and if that manifest cannot serve it, the resolver falls
+     * back to the other sources by name, which is the whole point of the
+     * axes being separate.
+     */
+    private fun openApplePage(
+        browseId: String,
+        title: String,
+        subtitle: String,
+        thumbnailUrl: String?,
+    ) {
+        val album = browseId.startsWith(com.music.bitchord.data.apple.AppleSources.ALBUM_PREFIX)
+        val artist = browseId.startsWith(com.music.bitchord.data.apple.AppleSources.ARTIST_PREFIX)
+        val libraryAlbum =
+            browseId.startsWith(com.music.bitchord.data.apple.AppleSources.LIB_ALBUM_PREFIX)
+        _detailStack.value += DetailPage(
+            browseId = browseId,
+            title = title,
+            subtitle = subtitle,
+            thumbnailUrl = thumbnailUrl,
+            songs = UiState.Loading,
+            type = when {
+                album -> BrowseType.ALBUM
+                artist -> BrowseType.ARTIST
+                else -> BrowseType.PLAYLIST
+            },
+        )
+        viewModelScope.launch {
+            val handle = com.music.bitchord.data.apple.AppleSources.handle()
+            if (handle == null) {
+                setApplePageSongs(browseId, UiState.Error(text(R.string.provider_apple_manifest_missing_subtitle)))
+                return@launch
+            }
+            val rows = when {
+                album -> com.music.bitchord.data.apple.AppleSources.catalogTracks(
+                    handle = handle,
+                    kind = "albums",
+                    id = browseId.removePrefix(com.music.bitchord.data.apple.AppleSources.ALBUM_PREFIX),
+                )
+                artist -> com.music.bitchord.data.apple.AppleSources.catalogTracks(
+                    handle = handle,
+                    kind = "artists",
+                    id = browseId.removePrefix(com.music.bitchord.data.apple.AppleSources.ARTIST_PREFIX),
+                )
+                // An album of the listener's own: the library's copy, asked
+                // of the library, because that is where it lives.
+                libraryAlbum -> com.music.bitchord.data.apple.AppleSources.libraryTracks(
+                    handle = handle,
+                    collection = "albums",
+                    collectionId = browseId.removePrefix(com.music.bitchord.data.apple.AppleSources.LIB_ALBUM_PREFIX),
+                )
+                else -> com.music.bitchord.data.apple.AppleSources.libraryTracks(
+                    handle = handle,
+                    collection = "playlists",
+                    collectionId = browseId.removePrefix(com.music.bitchord.data.apple.AppleSources.PAGE_PREFIX),
+                )
+            }
+            setApplePageSongs(
+                browseId,
+                rows.fold(
+                    onSuccess = { items ->
+                        if (items.isEmpty()) {
+                            UiState.Error(text(R.string.spotify_empty_tracks))
+                        } else {
+                            UiState.Success(items.map { it.song(handle.configId) })
+                        }
+                    },
+                    onFailure = { failure -> UiState.Error(failure.friendly()) },
+                ),
+            )
+        }
+    }
+
+    /** Publishes the rows of an open Apple page. */
+    private fun setApplePageSongs(browseId: String, songs: UiState<List<Song>>) {
+        _detailStack.value = _detailStack.value.map {
+            if (it.browseId == browseId) it.copy(songs = songs) else it
+        }
+    }
+
     private fun openSpotifyPage(browseId: String, title: String, subtitle: String, thumbnailUrl: String?) {
         _detailStack.value += DetailPage(
             browseId = browseId,

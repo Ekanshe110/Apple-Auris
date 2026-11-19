@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Auris</string>
+    <string name="app_name">Appix</string>
     <string name="automix_analysis_menu">Анализ Automix</string>
     <string name="playback_channel_name">Сейчас играет</string>
     <string name="download_channel_name">Загрузки</string>
