@@ -1019,7 +1019,16 @@ private fun GenreCard(genre: GenreTile, modifier: Modifier, onClick: () -> Unit)
             .aspectRatio(1.9f)
             .clip(RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
-            .background(if (art.isNullOrBlank()) genreBrush(genre.name) else Color.Transparent),
+            // A Brush on both branches: an artwork tile sits on a transparent
+            // gradient rather than a Color, which would make the argument
+            // `Any` and fail to resolve.
+            .background(
+                if (art.isNullOrBlank()) {
+                    genreBrush(genre.name)
+                } else {
+                    Brush.linearGradient(listOf(Color.Transparent, Color.Transparent))
+                },
+            ),
     ) {
         if (!art.isNullOrBlank()) {
             AsyncImage(
