@@ -6050,7 +6050,7 @@ private fun RootPage(
             // Apple's genre wall and recently-played rows belong to Apple's
             // look; with any other UI provider the page is what it was.
             genres = if (appleUi) {
-                viewModel.appleGenres.collectAsState().value.map {
+                viewModel.appleGenres.collectAsStateWithLifecycle().value.map {
                     com.music.bitchord.ui.screens.GenreTile(
                         name = it.name,
                         artworkUrl = it.artworkURL,
