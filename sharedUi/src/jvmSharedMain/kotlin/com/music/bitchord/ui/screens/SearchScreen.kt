@@ -1017,7 +1017,7 @@ private fun GenreCard(genre: GenreTile, modifier: Modifier, onClick: () -> Unit)
     Box(
         modifier = modifier
             .aspectRatio(1.9f)
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(10.dp))
             .clickable(onClick = onClick)
             // A Brush on both branches: an artwork tile sits on a transparent
             // gradient rather than a Color, which would make the argument
@@ -1043,7 +1043,7 @@ private fun GenreCard(genre: GenreTile, modifier: Modifier, onClick: () -> Unit)
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
-                        listOf(Color.Transparent, Color.Black.copy(alpha = 0.45f)),
+                        listOf(Color.Transparent, Color.Black.copy(alpha = 0.52f)),
                     ),
                 ),
         )
@@ -1056,7 +1056,7 @@ private fun GenreCard(genre: GenreTile, modifier: Modifier, onClick: () -> Unit)
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(horizontal = 10.dp, vertical = 8.dp),
+                .padding(horizontal = 10.dp, vertical = 10.dp),
         )
     }
 }

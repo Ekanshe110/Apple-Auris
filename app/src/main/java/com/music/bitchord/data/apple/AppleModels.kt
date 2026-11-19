@@ -112,6 +112,8 @@ data class AppleLibraryPage(
     @SerialName("tracks") val tracks: List<AppleItem> = emptyList(),
     @SerialName("offset") val offset: Int = 0,
     @SerialName("total") val total: Int = 0,
+    @SerialName("hasMore") val hasMore: Boolean = false,
+    @SerialName("nextOffset") val nextOffset: Int? = null,
 )
 
 /**

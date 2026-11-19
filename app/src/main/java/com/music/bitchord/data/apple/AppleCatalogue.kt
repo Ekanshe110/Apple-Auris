@@ -144,6 +144,32 @@ object AppleCatalogue {
         )
 
     /**
+     * Every page of one library collection, not just the first.
+     *
+     * A library page is capped by the service (100 rows); a collection with
+     * more than that used to end at the cap with no way to reach the rest.
+     * The walk stops when the service says there is no more, or at [maxPages]
+     * as a guard against a page that never advances.
+     */
+    suspend fun libraryAll(
+        baseUrl: String,
+        collection: String,
+        pageSize: Int = 100,
+        maxPages: Int = 10,
+    ): Result<List<AppleItem>> {
+        val out = mutableListOf<AppleItem>()
+        var offset = 0
+        repeat(maxPages) {
+            val page = library(baseUrl, collection, offset, pageSize)
+                .getOrElse { failure -> return Result.failure(failure) }
+            out += page.tracks
+            if (!page.hasMore || page.tracks.isEmpty()) return Result.success(out)
+            offset = page.nextOffset ?: (offset + page.tracks.size)
+        }
+        return Result.success(out)
+    }
+
+    /**
      * The rows of one library collection — one playlist, one album, or the
      * songs of a page.
      */

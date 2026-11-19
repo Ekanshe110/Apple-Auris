@@ -6275,8 +6275,23 @@ private fun RootPage(
                 onCategoryClick = { collection -> viewModel.openAppleLibrary(collection) },
                 onItemClick = { item ->
                     val browseId = item.browseId
-                    if (browseId != null) {
-                        viewModel.openDetail(
+                    when {
+                        // An artist the catalogue could not name: the row is
+                        // still an artist, so it opens a search for them.
+                        browseId != null &&
+                            browseId.startsWith(
+                                com.music.bitchord.data.apple.AppleSources.SEARCH_PREFIX,
+                            ) -> {
+                            viewModel.searchFor(
+                                android.net.Uri.decode(
+                                    browseId.removePrefix(
+                                        com.music.bitchord.data.apple.AppleSources.SEARCH_PREFIX,
+                                    ),
+                                ),
+                            )
+                            nav.selectedTab = TAB_SEARCH
+                        }
+                        browseId != null -> viewModel.openDetail(
                             browseId = browseId,
                             title = item.title,
                             subtitle = item.subtitle,

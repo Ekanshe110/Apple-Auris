@@ -39,6 +39,13 @@ internal object AppleSources {
     const val STATION_PREFIX = "apple:station:"
 
     /**
+     * Not a page: a search for a name the catalogue could not turn into an id.
+     * A row whose artist has no catalogue match still opens something real —
+     * a search for that artist — rather than being dropped from the library.
+     */
+    const val SEARCH_PREFIX = "apple:search:"
+
+    /**
      * An album in the listener's own library.
      *
      * A library album is not a catalogue album: it is the listener's own
@@ -292,8 +299,8 @@ internal object AppleSources {
      * for the same recording is not the same thing.
      */
     suspend fun libraryPlaylists(handle: Handle, limit: Int = 100): Result<List<ShelfItem>> =
-        AppleCatalogue.library(handle.baseUrl, "playlists", 0, limit).map { page ->
-            page.tracks.mapNotNull { item ->
+        AppleCatalogue.libraryAll(handle.baseUrl, "playlists", limit).map { items ->
+            items.mapNotNull { item ->
                 if (item.title.isBlank()) return@mapNotNull null
                 ShelfItem(
                     title = item.title,
@@ -307,8 +314,8 @@ internal object AppleSources {
 
     /** The listener's own albums, as the tiles the Library page shows. */
     suspend fun libraryAlbums(handle: Handle, limit: Int = 100): Result<List<ShelfItem>> =
-        AppleCatalogue.library(handle.baseUrl, "albums", 0, limit).map { page ->
-            page.tracks.mapNotNull { item ->
+        AppleCatalogue.libraryAll(handle.baseUrl, "albums", limit).map { items ->
+            items.mapNotNull { item ->
                 if (item.title.isBlank()) return@mapNotNull null
                 ShelfItem(
                     title = item.title,
@@ -322,28 +329,33 @@ internal object AppleSources {
 
     /** The listener's own artists, as tiles that open their pages. */
     suspend fun libraryArtists(handle: Handle, limit: Int = 100): Result<List<ShelfItem>> =
-        AppleCatalogue.library(handle.baseUrl, "artists", 0, limit).map { page ->
-            page.tracks.mapNotNull { item ->
+        AppleCatalogue.libraryAll(handle.baseUrl, "artists", limit).map { items ->
+            items.mapNotNull { item ->
+                if (item.title.isBlank()) return@mapNotNull null
                 // A library artist is identified by its library id; only the
                 // catalogue id opens a page of Apple's, and the addon fills
-                // that in where it could resolve one.
+                // that in where it could resolve one. Without it the row is
+                // still an artist, so it opens a search for the name rather
+                // than disappearing.
                 val catalogId = item.catalogId?.takeIf { it.isNotBlank() }
-                    ?: return@mapNotNull null
-                if (item.title.isBlank()) return@mapNotNull null
                 ShelfItem(
                     title = item.title,
                     subtitle = "",
                     thumbnailUrl = item.artworkURL,
                     videoId = null,
-                    browseId = ARTIST_PREFIX + catalogId,
+                    browseId = if (catalogId != null) {
+                        ARTIST_PREFIX + catalogId
+                    } else {
+                        SEARCH_PREFIX + android.net.Uri.encode(item.title)
+                    },
                 )
             }
         }
 
     /** The listener's own songs, as the rows that play. */
     suspend fun librarySongs(handle: Handle, limit: Int = 100): Result<List<Song>> =
-        AppleCatalogue.library(handle.baseUrl, "songs", 0, limit).map { page ->
-            page.tracks.mapNotNull { item ->
+        AppleCatalogue.libraryAll(handle.baseUrl, "songs", limit).map { items ->
+            items.mapNotNull { item ->
                 val id = item.catalogId?.takeIf { it.isNotBlank() } ?: item.id
                 if (id.isBlank() || item.title.isBlank()) return@mapNotNull null
                 Song(
