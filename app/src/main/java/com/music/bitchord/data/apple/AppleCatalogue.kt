@@ -148,25 +148,28 @@ object AppleCatalogue {
      *
      * A library page is capped by the service (100 rows); a collection with
      * more than that used to end at the cap with no way to reach the rest.
-     * The walk stops when the service says there is no more, or at [maxPages]
-     * as a guard against a page that never advances.
+     * The walk stops when the service says there is no more; a page that
+     * does not advance is the only other stop.
      */
     suspend fun libraryAll(
         baseUrl: String,
         collection: String,
         pageSize: Int = 100,
-        maxPages: Int = 10,
     ): Result<List<AppleItem>> {
         val out = mutableListOf<AppleItem>()
         var offset = 0
-        repeat(maxPages) {
+        // Until the service says there is no more. The only stop besides that
+        // is a page that does not advance — a server bug would otherwise spin
+        // here; a real library always moves forward.
+        while (true) {
             val page = library(baseUrl, collection, offset, pageSize)
                 .getOrElse { failure -> return Result.failure(failure) }
             out += page.tracks
             if (!page.hasMore || page.tracks.isEmpty()) return Result.success(out)
-            offset = page.nextOffset ?: (offset + page.tracks.size)
+            val next = page.nextOffset ?: (offset + page.tracks.size)
+            if (next <= offset) return Result.success(out)
+            offset = next
         }
-        return Result.success(out)
     }
 
     /**
