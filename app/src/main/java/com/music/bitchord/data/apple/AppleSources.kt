@@ -38,12 +38,6 @@ internal object AppleSources {
     /** A radio station, opened as a page of its own. */
     const val STATION_PREFIX = "apple:station:"
 
-    /**
-     * Not a page: a search for a name the catalogue could not turn into an id.
-     * A row whose artist has no catalogue match still opens something real —
-     * a search for that artist — rather than being dropped from the library.
-     */
-    const val SEARCH_PREFIX = "apple:search:"
 
     /**
      * An album in the listener's own library.
@@ -334,20 +328,17 @@ internal object AppleSources {
                 if (item.title.isBlank()) return@mapNotNull null
                 // A library artist is identified by its library id; only the
                 // catalogue id opens a page of Apple's, and the addon fills
-                // that in where it could resolve one. Without it the row is
-                // still an artist, so it opens a search for the name rather
-                // than disappearing.
+                // that in where it could resolve one. A credit line naming
+                // several people ("A, B & C") has no single artist page, so
+                // it is left out rather than pointed at the wrong one.
                 val catalogId = item.catalogId?.takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
                 ShelfItem(
                     title = item.title,
                     subtitle = "",
                     thumbnailUrl = item.artworkURL,
                     videoId = null,
-                    browseId = if (catalogId != null) {
-                        ARTIST_PREFIX + catalogId
-                    } else {
-                        SEARCH_PREFIX + android.net.Uri.encode(item.title)
-                    },
+                    browseId = ARTIST_PREFIX + catalogId,
                 )
             }
         }
