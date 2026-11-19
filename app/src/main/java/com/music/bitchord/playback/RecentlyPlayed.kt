@@ -62,7 +62,7 @@ object RecentlyPlayed {
     }
 
     /** Newest first. Empty before the first track, and after a cleared install. */
-    fun load(): List<Entry> {
+    private fun load(): List<Entry> {
         if (!this::prefs.isInitialized) return emptyList()
         val raw = prefs.getString(KEY, null) ?: return emptyList()
         return runCatching { json.decodeFromString(serializer, raw) }.getOrDefault(emptyList())
