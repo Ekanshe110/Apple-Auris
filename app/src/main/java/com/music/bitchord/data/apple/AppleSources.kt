@@ -229,14 +229,20 @@ internal object AppleSources {
                 )
             }
         }
-        // The catalogue's own rows, found the way Apple's own browse finds
-        // them: by what they are called.
-        for ((title, term) in _BROWSE_SHELVES) {
-            val rows = AppleCatalogue.browse(handle.baseUrl, term, "playlists", 12).getOrNull()
-                ?.playlists.orEmpty()
+        // The catalogue's own rows, as the addon defines them. Nothing here
+        // is a list in the app: a row Apple adds is a server edit.
+        val browseSections = AppleCatalogue.browsePage(handle.baseUrl)
+            .getOrNull()?.sections.orEmpty()
+        for (section in browseSections) {
+            val rows = AppleCatalogue.browse(
+                handle.baseUrl,
+                section.term,
+                section.types.ifBlank { "playlists" },
+                12,
+            ).getOrNull()?.playlists.orEmpty()
             if (rows.isEmpty()) continue
             shelves += HomeShelf(
-                title = title,
+                title = section.title,
                 subtitle = "",
                 items = rows.mapNotNull { row ->
                     ShelfItem(
@@ -252,16 +258,31 @@ internal object AppleSources {
         return Result.success(shelves)
     }
 
+    /** Apple's search-page genres; empty on an addon without the route. */
+    suspend fun genres(handle: Handle): Result<List<AppleGenre>> =
+        AppleCatalogue.genres(handle.baseUrl)
+
+    /** The directory at the foot of the New page, as the addon defines it. */
+    suspend fun browseDirectory(handle: Handle): Result<List<AppleDirectoryEntry>> =
+        AppleCatalogue.browsePage(handle.baseUrl).map { it.directory }
+
     /**
-     * The catalogue's own rows, and the words that find them.
+     * An artist's albums as the shelves its page draws, titled by the caller
+     * because the heading is localised and this layer has no resources.
      */
-    private val _BROWSE_SHELVES = listOf(
-        "Apple Music Playlists" to "Apple Music",
-        "Charts" to "Top 100",
-        "Apple Music Sessions" to "Sessions",
-        "The Best DJ Mixes" to "DJ Mix",
-        "Now on Tour" to "Live",
-    )
+    suspend fun artistShelves(
+        handle: Handle,
+        artistId: String,
+        albumsTitle: String,
+    ): Result<List<HomeShelf>> =
+        AppleCatalogue.artistAlbums(handle.baseUrl, artistId).map { items ->
+            val rows = items.mapNotNull { it.shelfItem(handle.configId) }
+            if (rows.isEmpty()) {
+                emptyList()
+            } else {
+                listOf(HomeShelf(title = albumsTitle, subtitle = "", items = rows))
+            }
+        }
 
     /**
      * The listener's own playlists, as the rows the Library page draws.
@@ -312,6 +333,7 @@ internal object AppleSources {
                     thumbnailUrl = item.artworkURL,
                     durationText = item.runtimeMs.takeIf { it > 0 }?.let(::durationText),
                     albumName = item.album.takeIf { it.isNotBlank() },
+                    isrc = item.isrc?.trim()?.takeIf { it.isNotEmpty() },
                     sourceQuality = item.audioQuality,
                 )
             }
@@ -328,6 +350,8 @@ internal fun AppleItem.song(configId: String): Song = Song(
     thumbnailUrl = artworkURL,
     durationText = runtimeMs.takeIf { it > 0 }?.let(::durationText),
     albumName = album.takeIf { it.isNotBlank() },
+    // The recording's identity across catalogues, for a cross-source match.
+    isrc = isrc?.trim()?.takeIf { it.isNotEmpty() },
     // What the player needs to know to offer the rendition switch: whether
     // Apple holds an Atmos mix of this recording, and whether it holds a
     // Hi-Res master.
@@ -423,7 +447,12 @@ internal fun AppleRadioRow.station(): com.music.bitchord.data.model.AppleRadioRo
         artworkUrl = artworkURL,
         provider = provider,
         // A playlist opens as a page of its own; a station plays from here.
-        browseId = if (kind == "playlists") AppleSources.PAGE_PREFIX + id else null,
+        browseId = when (kind.lowercase()) {
+            "playlists" -> AppleSources.PAGE_PREFIX + id
+            "albums" -> AppleSources.ALBUM_PREFIX + id
+            "artists" -> AppleSources.ARTIST_PREFIX + id
+            else -> null
+        },
     )
 
 /**

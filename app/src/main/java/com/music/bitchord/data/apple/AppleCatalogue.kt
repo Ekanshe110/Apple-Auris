@@ -204,6 +204,36 @@ object AppleCatalogue {
             AppleSearchResponse.serializer(),
         )
 
+    /** Apple's catalogue genres: the wall its own search page opens with. */
+    suspend fun genres(baseUrl: String, limit: Int = 30): Result<List<AppleGenre>> =
+        get(
+            baseUrl,
+            listOf("search", "genres"),
+            mapOf("limit" to limit.toString()),
+            AppleGenreList.serializer(),
+        ).map { it.genres }
+
+    /**
+     * The New page's rows and the directory beneath them, as the addon
+     * defines them — a row Apple adds is a server edit, not a new build.
+     */
+    suspend fun browsePage(baseUrl: String): Result<AppleBrowseSectionList> =
+        get(
+            baseUrl,
+            listOf("browse", "sections"),
+            emptyMap(),
+            AppleBrowseSectionList.serializer(),
+        )
+
+    /** An Apple artist's albums, as the rows the artist page draws. */
+    suspend fun artistAlbums(baseUrl: String, artistId: String): Result<List<AppleItem>> =
+        get(
+            baseUrl,
+            listOf("catalog", "artists", artistId, "albums"),
+            emptyMap(),
+            AppleItemList.serializer(),
+        ).map { it.items }
+
     /** Apple's stations: the listener's own, and the ones Apple builds. */
     suspend fun stations(baseUrl: String): Result<List<AppleStation>> =
         get(baseUrl, listOf("radio", "stations"), emptyMap(), AppleStationList.serializer())
@@ -515,4 +545,44 @@ data class AppleWriteResponse(
     @kotlinx.serialization.SerialName("id") val id: String? = null,
     @kotlinx.serialization.SerialName("removed") val removed: Int = 0,
     @kotlinx.serialization.SerialName("added") val added: Int = 0,
+)
+
+/** One genre tile on Apple's search page. */
+@Serializable
+data class AppleGenre(
+    @SerialName("id") val id: String = "",
+    @SerialName("name") val name: String = "",
+    @SerialName("artworkURL") val artworkURL: String? = null,
+)
+
+@Serializable
+data class AppleGenreList(
+    @SerialName("genres") val genres: List<AppleGenre> = emptyList(),
+)
+
+/** One catalogue row of the New page. */
+@Serializable
+data class AppleBrowseSection(
+    @SerialName("title") val title: String = "",
+    @SerialName("term") val term: String = "",
+    @SerialName("types") val types: String = "playlists",
+)
+
+/** One row of the directory at the foot of the New page. */
+@Serializable
+data class AppleDirectoryEntry(
+    @SerialName("label") val label: String = "",
+    @SerialName("term") val term: String = "",
+)
+
+@Serializable
+data class AppleBrowseSectionList(
+    @SerialName("sections") val sections: List<AppleBrowseSection> = emptyList(),
+    @SerialName("directory") val directory: List<AppleDirectoryEntry> = emptyList(),
+)
+
+/** Rows of one kind, as a catalogue route answers them. */
+@Serializable
+data class AppleItemList(
+    @SerialName("items") val items: List<AppleItem> = emptyList(),
 )

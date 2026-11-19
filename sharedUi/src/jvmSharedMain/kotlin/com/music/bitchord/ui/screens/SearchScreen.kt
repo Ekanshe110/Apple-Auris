@@ -15,6 +15,7 @@ import androidx.compose.foundation.clickable
 import com.music.bitchord.ui.components.longPressMenuClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -57,9 +58,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import coil3.compose.AsyncImage
@@ -132,6 +136,13 @@ fun SearchScreen(
     onHistoryClick: (SearchHistoryEntity) -> Unit,
     onHistoryRemove: (String) -> Unit,
     onHistoryClear: () -> Unit,
+    /** Apple's genre wall, shown where the page is otherwise empty. */
+    genres: List<GenreTile> = emptyList(),
+    onGenreClick: (String) -> Unit = {},
+    /** The tracks that played most recently, newest first. */
+    recentlyPlayed: List<Song> = emptyList(),
+    /** Localised heading for the recently-played rows. */
+    recentlyPlayedTitle: String = "",
     /** Long-press handler for typeahead rows — opens the song actions sheet. */
     onTypeaheadLongPress: ((Song) -> Unit)? = null,
     modifier: Modifier = Modifier,
@@ -284,17 +295,32 @@ fun SearchScreen(
                         )
                     }
                 }
-                results == null -> if (history.isEmpty()) {
-                    item { MessageState(stringResource(Res.string.search_empty)) }
-                } else {
-                    recentSearches(
-                        history = history,
-                        currentSong = currentSong,
-                        isPlaying = isPlaying,
-                        onClick = onHistoryClick,
-                        onRemove = onHistoryRemove,
-                        onClear = onHistoryClear,
-                    )
+                results == null -> {
+                    if (recentlyPlayed.isNotEmpty()) {
+                        recentlyPlayedRows(
+                            songs = recentlyPlayed,
+                            title = recentlyPlayedTitle,
+                            currentSong = currentSong,
+                            isPlaying = isPlaying,
+                            onClick = { index -> onSongClick(recentlyPlayed, index) },
+                        )
+                    }
+                    if (history.isNotEmpty()) {
+                        recentSearches(
+                            history = history,
+                            currentSong = currentSong,
+                            isPlaying = isPlaying,
+                            onClick = onHistoryClick,
+                            onRemove = onHistoryRemove,
+                            onClear = onHistoryClear,
+                        )
+                    }
+                    if (genres.isNotEmpty()) {
+                        item { GenreGrid(genres = genres, onGenreClick = onGenreClick) }
+                    }
+                    if (history.isEmpty() && genres.isEmpty() && recentlyPlayed.isEmpty()) {
+                        item { MessageState(stringResource(Res.string.search_empty)) }
+                    }
                 }
                 results is UiState.Loading -> songListSkeleton(circular = filter == SearchFilter.ARTISTS)
                 results is UiState.Error -> item { MessageState(results.message) }
@@ -953,4 +979,164 @@ private fun SearchResult.lazyContentType(): String = when (this) {
     is SearchResult.TopTrack -> "top-result"
     is SearchResult.Track -> LazyContent.SONG_ROW
     is SearchResult.Browse -> LazyContent.BROWSE_ROW
+}
+
+
+/**
+ * Apple's genre wall: two across, the way Apple's own search page opens.
+ *
+ * Artwork comes from the addon where it has any. A genre without art gets a
+ * stable gradient of its own rather than a hole, so the wall is whole.
+ */
+@Composable
+private fun GenreGrid(genres: List<GenreTile>, onGenreClick: (String) -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = PAGE_GUTTER, vertical = 6.dp),
+    ) {
+        genres.chunked(2).forEach { row ->
+            Row(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+                row.forEachIndexed { index, genre ->
+                    GenreCard(
+                        genre = genre,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onGenreClick(genre.name) },
+                    )
+                    if (index != row.lastIndex) Spacer(Modifier.width(8.dp))
+                }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun GenreCard(genre: GenreTile, modifier: Modifier, onClick: () -> Unit) {
+    val art = genre.artworkUrl
+    Box(
+        modifier = modifier
+            .aspectRatio(1.9f)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .background(if (art.isNullOrBlank()) genreBrush(genre.name) else Color.Transparent),
+    ) {
+        if (!art.isNullOrBlank()) {
+            AsyncImage(
+                model = art,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color.Transparent, Color.Black.copy(alpha = 0.45f)),
+                    ),
+                ),
+        )
+        Text(
+            text = genre.name,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = Color.White,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+        )
+    }
+}
+
+/** One genre tile as the search page draws it. */
+data class GenreTile(val name: String, val artworkUrl: String? = null)
+
+/** Apple's tile palette, used when the addon has no artwork for a genre. */
+private val GENRE_COLORS = listOf(
+    Color(0xFFE8447A),
+    Color(0xFF7A5CE0),
+    Color(0xFF3C8CE7),
+    Color(0xFF22A06B),
+    Color(0xFFE07B39),
+    Color(0xFFB03CE0),
+    Color(0xFF2FB6C4),
+    Color(0xFFD0365A),
+)
+
+private fun genreBrush(name: String): Brush {
+    val hash = name.hashCode()
+    val first = GENRE_COLORS[(hash and 0x7fffffff) % GENRE_COLORS.size]
+    val second = GENRE_COLORS[((hash / 7) and 0x7fffffff) % GENRE_COLORS.size]
+    return Brush.linearGradient(listOf(first, second))
+}
+
+/** Recently played rows: the search page's answer to an empty field. */
+private fun LazyListScope.recentlyPlayedRows(
+    songs: List<Song>,
+    title: String,
+    currentSong: Song?,
+    isPlaying: Boolean,
+    onClick: (Int) -> Unit,
+) {
+    item(key = "recently-played:header") {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleLarge,
+            color = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier.padding(
+                start = PAGE_GUTTER,
+                end = PAGE_GUTTER,
+                top = 14.dp,
+                bottom = 4.dp,
+            ),
+        )
+    }
+    itemsIndexed(
+        songs,
+        key = { index, song -> "recently-played:$index:${song.videoId}" },
+    ) { index, song ->
+        val current = song.isSameTrackAs(currentSong)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onClick(index) }
+                .padding(start = PAGE_GUTTER, end = PAGE_GUTTER, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(44.dp)) {
+                AsyncImage(
+                    model = song.thumbnailUrl,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                )
+                if (current && isPlaying) {
+                    SearchPlayingBars(Modifier.align(Alignment.Center))
+                }
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = song.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = if (current) PlayingAccent else MaterialTheme.colorScheme.onBackground,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = song.artist,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
 }

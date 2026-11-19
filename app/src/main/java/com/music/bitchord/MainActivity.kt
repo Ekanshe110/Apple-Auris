@@ -218,6 +218,7 @@ import com.music.bitchord.ui.screens.SpotifyCanvasAuthScreen
 import com.music.bitchord.ui.screens.SpotifyLibraryScreen
 import com.music.bitchord.data.spotify.SPOTIFY_PAGE_PREFIX
 import com.music.bitchord.playback.AudioCache
+import com.music.bitchord.playback.LastPlayed
 import com.music.bitchord.playback.LinkRequest
 import com.music.bitchord.playback.MusicLink
 import com.music.bitchord.playback.OriginalVersion
@@ -930,6 +931,7 @@ private fun BitChordApp(
         if (nav.selectedTab == TAB_APPLE_NEW) viewModel.ensureAppleBrowseLoaded()
         if (nav.selectedTab == TAB_SEARCH) {
             searchVisualActive = true
+            viewModel.ensureAppleGenresLoaded()
         } else {
             searchVisualActive = false
             searchKeyboardActive = false
@@ -5017,18 +5019,9 @@ private fun RootPage(
     // sessions, the mixes, the interviews and the shows.
     val appleRadioShelves = viewModel.appleRadioShelvesList
     // The directory at the foot of Apple's browse page: the rest of the
-    // catalogue, each row a search of Apple's own.
-    val appleBrowseDirectory = remember {
-        listOf(
-            "Charts" to "Top 100",
-            "Playlists" to "Apple Music",
-            "Albums" to "New Releases",
-            "Artists" to "Radio",
-            "Stations by Genre" to "Station",
-            "Apple Music Sessions" to "Sessions",
-            "The Best DJ Mixes" to "DJ Mix",
-        )
-    }
+    // catalogue, each row a search of Apple's own. It comes from the addon,
+    // so a row Apple adds is a server edit rather than a new build.
+    val appleBrowseDirectory by viewModel.appleDirectory.collectAsStateWithLifecycle()
     // Apple's browse groups, for the New page under Apple's look.
     val appleBrowseState by viewModel.appleBrowse.collectAsStateWithLifecycle()
     // Apple's own library, for the Library page under Apple's look.
@@ -6054,6 +6047,29 @@ private fun RootPage(
         )
         TAB_SEARCH -> SearchScreen(
             query = query,
+            // Apple's genre wall and recently-played rows belong to Apple's
+            // look; with any other UI provider the page is what it was.
+            genres = if (appleUi) {
+                viewModel.appleGenres.collectAsState().value.map {
+                    com.music.bitchord.ui.screens.GenreTile(
+                        name = it.name,
+                        artworkUrl = it.artworkURL,
+                    )
+                }
+            } else {
+                emptyList()
+            },
+            onGenreClick = { genre -> viewModel.onQueryChange(genre) },
+            recentlyPlayed = if (appleUi) {
+                remember(player.song?.videoId) {
+                    LastPlayed.load()?.songs.orEmpty()
+                        .distinctBy { it.videoId }
+                        .take(10)
+                }
+            } else {
+                emptyList()
+            },
+            recentlyPlayedTitle = historyLabel,
             onQueryChange = viewModel::onQueryChange,
             filter = filter,
             currentSong = player.song,

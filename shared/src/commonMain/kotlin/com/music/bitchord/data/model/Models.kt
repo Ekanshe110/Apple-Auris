@@ -175,6 +175,14 @@ data class Song(    val videoId: String,
      * license. Null on every row that is not a live stream.
      */
     val liveLicenseUrl: String? = null,
+    /**
+     * The recording's ISRC, where the row's catalogue states one.
+     *
+     * The only identity that survives a change of provider: Apple, Spotify
+     * and the addons number their own rows, but the ISRC names the recording
+     * itself. A cross-source fallback compares it before any title.
+     */
+    val isrc: String? = null,
 ) {
     /** Legacy derived property: true if and only if [queueTier] is [QueueTier.AUTOPLAY]. */
     val fromAutoplay: Boolean get() = queueTier == QueueTier.AUTOPLAY

@@ -589,6 +589,38 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return kept.ifEmpty { songs }
     }
 
+    private val _appleGenres =
+        MutableStateFlow<List<com.music.bitchord.data.apple.AppleGenre>>(emptyList())
+    val appleGenres: StateFlow<List<com.music.bitchord.data.apple.AppleGenre>> =
+        _appleGenres.asStateFlow()
+
+    private var appleGenresRequested = false
+
+    private val _appleDirectory =
+        MutableStateFlow<List<Pair<String, String>>>(emptyList())
+
+    /** The New page's directory rows, as the addon publishes them. */
+    val appleDirectory: StateFlow<List<Pair<String, String>>> = _appleDirectory.asStateFlow()
+
+    /**
+     * Genres are read the first time the search page is opened: a listener
+     * who never searches should not pay for the request.
+     */
+    fun ensureAppleGenresLoaded() {
+        if (appleGenresRequested) return
+        appleGenresRequested = true
+        loadAppleGenres()
+    }
+
+    /** Apple's search-page genres. An older addon leaves the wall empty. */
+    fun loadAppleGenres() {
+        viewModelScope.launch {
+            val handle = com.music.bitchord.data.apple.AppleSources.handle() ?: return@launch
+            com.music.bitchord.data.apple.AppleSources.genres(handle)
+                .onSuccess { _appleGenres.value = it }
+        }
+    }
+
     private val _appleBrowse = MutableStateFlow<UiState<List<HomeShelf>>>(UiState.Loading)
     val appleBrowse: StateFlow<UiState<List<HomeShelf>>> = _appleBrowse.asStateFlow()
 
@@ -603,6 +635,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     UiState.Error(text(R.string.provider_apple_manifest_missing_subtitle))
                 return@launch
             }
+            com.music.bitchord.data.apple.AppleSources.browseDirectory(handle)
+                .onSuccess { rows ->
+                    _appleDirectory.value = rows.map { it.label to it.term }
+                }
             com.music.bitchord.data.apple.AppleSources.browseShelves(handle)
                 .onSuccess { shelves ->
                     _appleBrowse.value = if (shelves.isEmpty()) {
@@ -4950,7 +4986,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val handle = com.music.bitchord.data.apple.AppleSources.handle()
             if (handle == null) {
-                setApplePageSongs(browseId, UiState.Error(text(R.string.provider_apple_manifest_missing_subtitle)))
+                setApplePage(browseId, UiState.Error(text(R.string.provider_apple_manifest_missing_subtitle)))
                 return@launch
             }
             val rows = when {
@@ -4977,9 +5013,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     collectionId = browseId.removePrefix(com.music.bitchord.data.apple.AppleSources.PAGE_PREFIX),
                 )
             }
-            setApplePageSongs(
-                browseId,
-                rows.fold(
+            // An artist's page also carries their albums, as the shelf the
+            // page opens with. The heading is localised here, where the
+            // resources are; the data layer only knows the rows.
+            val sections = if (artist) {
+                com.music.bitchord.data.apple.AppleSources.artistShelves(
+                    handle = handle,
+                    artistId = browseId.removePrefix(
+                        com.music.bitchord.data.apple.AppleSources.ARTIST_PREFIX,
+                    ),
+                    albumsTitle = text(R.string.albums),
+                ).getOrNull().orEmpty()
+            } else {
+                emptyList()
+            }
+            setApplePage(
+                browseId = browseId,
+                songs = rows.fold(
                     onSuccess = { items ->
                         if (items.isEmpty()) {
                             UiState.Error(text(R.string.spotify_empty_tracks))
@@ -4989,14 +5039,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     },
                     onFailure = { failure -> UiState.Error(failure.friendly()) },
                 ),
+                sections = sections,
             )
         }
     }
 
-    /** Publishes the rows of an open Apple page. */
-    private fun setApplePageSongs(browseId: String, songs: UiState<List<Song>>) {
+    /** Publishes the rows and shelves of an open Apple page. */
+    private fun setApplePage(
+        browseId: String,
+        songs: UiState<List<Song>>,
+        sections: List<HomeShelf> = emptyList(),
+    ) {
         _detailStack.value = _detailStack.value.map {
-            if (it.browseId == browseId) it.copy(songs = songs) else it
+            if (it.browseId == browseId) it.copy(songs = songs, sections = sections) else it
         }
     }
 

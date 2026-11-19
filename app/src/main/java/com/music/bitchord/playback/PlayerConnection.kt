@@ -299,6 +299,7 @@ fun Song.toSongBundle(): Bundle = bundleOf(
     "isExplicit" to (isExplicit ?: false),
     "atmosAvailable" to atmosAvailable,
     "hiResAvailable" to hiResAvailable,
+    "isrc" to isrc,
     // `bundleOf` has no overload for a list of strings, so the two halves of
     // the credits go in afterwards.
 ).apply {
@@ -328,6 +329,7 @@ fun songFromBundle(b: Bundle): Song = Song(
     playbackSource = b.getString("playbackSource"),
     playbackSourceType = b.getString("playbackSourceType")?.let { runCatching { com.music.bitchord.data.model.PlaybackSourceType.valueOf(it) }.getOrNull() },
     playbackSourceId = b.getString("playbackSourceId"),
+    isrc = b.getString("isrc"),
     isExplicit = if (b.containsKey("isExplicit")) b.getBoolean("isExplicit") else null,
     atmosAvailable = b.getBoolean("atmosAvailable"),
     hiResAvailable = b.getBoolean("hiResAvailable"),
@@ -826,6 +828,9 @@ private fun Song.matchQuery(): String = buildString {
     TrackMatcher.secondsOf(durationText)?.let { append("&d=").append(it) }
     albumName?.takeIf { it.isNotBlank() }?.let { append("&l=").append(Uri.encode(it)) }
     isExplicit?.let { append("&e=").append(if (it) "1" else "0") }
+    // The recording's ISRC, so the resolver can match it elsewhere before it
+    // falls back to titles. See [TrackMatcher.score].
+    isrc?.trim()?.takeIf { it.isNotEmpty() }?.let { append("&i=").append(Uri.encode(it)) }
     // `m` controls source routing, not player policy. A converted catalogue
     // track keeps [isVideoOrigin] for AutoMix, but is intentionally audio here
     // so the normal source-quality upgrade path can improve it.

@@ -198,6 +198,7 @@ object SourceResolver {
         album = uri.getQueryParameter("l"),
         isExplicit = uri.getQueryParameter("e")?.let { it == "1" },
         isVideo = uri.getQueryParameter("m") == "1",
+        isrc = uri.getQueryParameter("i")?.takeIf { it.isNotBlank() },
     )
 
     /**

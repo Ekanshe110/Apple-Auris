@@ -231,6 +231,8 @@ class AddonSource(
                         } else {
                             ModuleSource.qualityTier("${track.audioQuality} ${track.format}")
                         },
+                        // The recording's identity across catalogues.
+                        isrc = track.isrc?.trim()?.takeIf { it.isNotEmpty() },
                         // Whether the catalogue holds an Atmos mix of this
                         // recording, so the player can offer the switch.
                         atmosAvailable = track.isDolbyAtmos,

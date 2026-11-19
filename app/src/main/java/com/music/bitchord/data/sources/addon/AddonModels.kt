@@ -196,6 +196,8 @@ data class AddonTrack(
     /** Seconds. Read as a double so an addon sending `240.0` is not a parse failure. */
     @SerialName("duration") val duration: Double? = null,
     @SerialName("artworkURL") val artworkURL: String? = null,
+    /** The recording's ISRC, when the addon states one. */
+    @SerialName("isrc") val isrc: String? = null,
     @SerialName("albumArtworkURL") val albumArtworkURL: String? = null,
     /** `mp3`, `flac`, `aac`, `m4a` — what the row is, when the addon says. */
     @SerialName("format") val format: String = "",
