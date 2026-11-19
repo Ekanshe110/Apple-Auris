@@ -320,7 +320,9 @@ fun songFromBundle(b: Bundle): Song = Song(
     isVideo = b.getBoolean("isVideo"),
     isVideoOrigin = b.getBoolean("isVideoOrigin"),
     setVideoId = b.getString("setVideoId"),
-    fromAutoplay = b.getBoolean("fromAutoplay"),
+    // The primary constructor owns the tier; the legacy `fromAutoplay` bool
+    // is the fallback for bundles written before the tier was carried.
+    queueTier = if (b.getBoolean("fromAutoplay")) QueueTier.AUTOPLAY else QueueTier.CONTEXT,
     radioName = b.getString("radioName"),
     localUri = b.getString("localUri"),
     downloadFormat = b.getString("downloadFormat"),
