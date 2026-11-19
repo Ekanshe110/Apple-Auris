@@ -24,7 +24,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -67,6 +66,11 @@ fun AppleLibraryScreen(
     onItemClick: (ShelfItem) -> Unit,
     onSongClick: (Song) -> Unit,
     onItemLongPress: ((ShelfItem) -> Unit)? = null,
+    /**
+     * One of the library's categories, opened as a page of its own the way
+     * Apple's library does — "playlists", "albums", "artists" or "songs".
+     */
+    onCategoryClick: (String) -> Unit = {},
     onRetry: () -> Unit,
     refreshing: Boolean,
     onRefresh: () -> Unit,
@@ -75,7 +79,6 @@ fun AppleLibraryScreen(
     contentPadding: PaddingValues,
     title: String? = null,
 ) {
-    val scope = rememberCoroutineScope()
     PullToRefresh(
         refreshing = refreshing,
         onRefresh = onRefresh,
@@ -129,26 +132,27 @@ fun AppleLibraryScreen(
                     if (content.songs.isNotEmpty()) at += 1 + content.songs.size
                     val playlistsIndex = if (content.playlists.isNotEmpty()) at + 1 else -1
                     // The categories, in Apple's own order and wording.
+                    // The categories, in Apple's own order, each opening the
+                    // page it names rather than scrolling this one. A grid
+                    // that only scrolls is not a page.
                     item(key = "apple-library:categories") {
                         Column {
-                            if (playlistsIndex >= 0) {
-                                AppleLibraryCategoryRow(
-                                    label = stringResource(Res.string.apple_playlists),
-                                    onClick = { scope.launch { listState.animateScrollToItem(playlistsIndex) } },
-                                )
-                            }
-                            if (albumsIndex >= 0) {
-                                AppleLibraryCategoryRow(
-                                    label = stringResource(Res.string.apple_albums),
-                                    onClick = { scope.launch { listState.animateScrollToItem(albumsIndex) } },
-                                )
-                            }
-                            if (songsIndex >= 0) {
-                                AppleLibraryCategoryRow(
-                                    label = stringResource(Res.string.apple_songs),
-                                    onClick = { scope.launch { listState.animateScrollToItem(songsIndex) } },
-                                )
-                            }
+                            AppleLibraryCategoryRow(
+                                label = stringResource(Res.string.apple_playlists),
+                                onClick = { onCategoryClick("playlists") },
+                            )
+                            AppleLibraryCategoryRow(
+                                label = stringResource(Res.string.apple_albums),
+                                onClick = { onCategoryClick("albums") },
+                            )
+                            AppleLibraryCategoryRow(
+                                label = stringResource(Res.string.artists),
+                                onClick = { onCategoryClick("artists") },
+                            )
+                            AppleLibraryCategoryRow(
+                                label = stringResource(Res.string.apple_songs),
+                                onClick = { onCategoryClick("songs") },
+                            )
                         }
                     }
                     if (content.recentlyAdded.isNotEmpty()) {

@@ -320,6 +320,26 @@ internal object AppleSources {
             }
         }
 
+    /** The listener's own artists, as tiles that open their pages. */
+    suspend fun libraryArtists(handle: Handle, limit: Int = 100): Result<List<ShelfItem>> =
+        AppleCatalogue.library(handle.baseUrl, "artists", 0, limit).map { page ->
+            page.tracks.mapNotNull { item ->
+                // A library artist is identified by its library id; only the
+                // catalogue id opens a page of Apple's, and the addon fills
+                // that in where it could resolve one.
+                val catalogId = item.catalogId?.takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
+                if (item.title.isBlank()) return@mapNotNull null
+                ShelfItem(
+                    title = item.title,
+                    subtitle = "",
+                    thumbnailUrl = item.artworkURL,
+                    videoId = null,
+                    browseId = ARTIST_PREFIX + catalogId,
+                )
+            }
+        }
+
     /** The listener's own songs, as the rows that play. */
     suspend fun librarySongs(handle: Handle, limit: Int = 100): Result<List<Song>> =
         AppleCatalogue.library(handle.baseUrl, "songs", 0, limit).map { page ->

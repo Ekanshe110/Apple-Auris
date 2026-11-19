@@ -222,6 +222,7 @@ import com.music.bitchord.playback.LastPlayed
 import com.music.bitchord.playback.LinkRequest
 import com.music.bitchord.playback.MusicLink
 import com.music.bitchord.playback.OriginalVersion
+import com.music.bitchord.playback.RecentlyPlayed
 import com.music.bitchord.playback.PlayerDeepLink
 import com.music.bitchord.playback.QueueBuilder
 import com.music.bitchord.playback.QueueCoordinator
@@ -6059,13 +6060,9 @@ private fun RootPage(
             } else {
                 emptyList()
             },
-            onGenreClick = { genre -> viewModel.onQueryChange(genre) },
+            onGenreClick = { genre -> viewModel.openAppleGenre(genre) },
             recentlyPlayed = if (appleUi) {
-                remember(player.song?.videoId) {
-                    LastPlayed.load()?.songs.orEmpty()
-                        .distinctBy { it.videoId }
-                        .take(10)
-                }
+                remember(player.song?.videoId) { RecentlyPlayed.recent(10) }
             } else {
                 emptyList()
             },
@@ -6275,6 +6272,7 @@ private fun RootPage(
             AppleLibraryScreen(
                 state = appleLibraryState,
                 listState = scroll.library,
+                onCategoryClick = { collection -> viewModel.openAppleLibrary(collection) },
                 onItemClick = { item ->
                     val browseId = item.browseId
                     if (browseId != null) {

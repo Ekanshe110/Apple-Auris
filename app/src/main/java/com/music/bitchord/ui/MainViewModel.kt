@@ -607,7 +607,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * who never searches should not pay for the request.
      */
     fun ensureAppleGenresLoaded() {
-        if (appleGenresRequested) return
+        // An empty list means the earlier try failed or found no addon; ask
+        // again rather than serving nothing for the rest of the session.
+        if (appleGenresRequested && _appleGenres.value.isNotEmpty()) return
         appleGenresRequested = true
         loadAppleGenres()
     }
@@ -4961,6 +4963,122 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * back to the other sources by name, which is the whole point of the
      * axes being separate.
      */
+    /**
+     * One of Apple's library categories, opened as a page of its own rather
+     * than scrolled to on the library page.
+     */
+    fun openAppleLibrary(collection: String) {
+        val browseId = "apple:library:$collection"
+        val title = when (collection) {
+            "playlists" -> text(R.string.playlists)
+            "albums" -> text(R.string.albums)
+            "artists" -> text(R.string.artists)
+            "songs" -> text(R.string.songs)
+            else -> text(R.string.library)
+        }
+        _detailStack.value += DetailPage(
+            browseId = browseId,
+            title = title,
+            subtitle = "",
+            thumbnailUrl = null,
+            songs = UiState.Loading,
+            type = BrowseType.OTHER,
+        )
+        viewModelScope.launch {
+            val handle = com.music.bitchord.data.apple.AppleSources.handle()
+            if (handle == null) {
+                setApplePage(
+                    browseId,
+                    UiState.Error(text(R.string.provider_apple_manifest_missing_subtitle)),
+                )
+                return@launch
+            }
+            if (collection == "songs") {
+                com.music.bitchord.data.apple.AppleSources.librarySongs(handle)
+                    .onSuccess { songs ->
+                        setApplePage(
+                            browseId,
+                            if (songs.isEmpty()) {
+                                UiState.Error(text(R.string.spotify_empty_tracks))
+                            } else {
+                                UiState.Success(songs)
+                            },
+                        )
+                    }
+                    .onFailure { failure -> setApplePage(browseId, UiState.Error(failure.friendly())) }
+                return@launch
+            }
+            val rows: Result<List<com.music.bitchord.data.model.ShelfItem>> = when (collection) {
+                "playlists" -> com.music.bitchord.data.apple.AppleSources.libraryPlaylists(handle)
+                "albums" -> com.music.bitchord.data.apple.AppleSources.libraryAlbums(handle)
+                "artists" -> com.music.bitchord.data.apple.AppleSources.libraryArtists(handle)
+                else -> Result.success(emptyList())
+            }
+            rows.onSuccess { items ->
+                setApplePage(
+                    browseId,
+                    if (items.isEmpty()) {
+                        UiState.Error(text(R.string.spotify_empty_tracks))
+                    } else {
+                        UiState.Success(emptyList())
+                    },
+                    sections = if (items.isEmpty()) {
+                        emptyList()
+                    } else {
+                        listOf(HomeShelf(title = title, subtitle = "", items = items))
+                    },
+                )
+            }.onFailure { failure -> setApplePage(browseId, UiState.Error(failure.friendly())) }
+        }
+    }
+
+    /**
+     * A genre tile, opened as the page Apple opens: its playlists and albums.
+     */
+    fun openAppleGenre(genre: String) {
+        if (genre.isBlank()) return
+        val browseId = "apple:genre:$genre"
+        _detailStack.value += DetailPage(
+            browseId = browseId,
+            title = genre,
+            subtitle = "",
+            thumbnailUrl = null,
+            songs = UiState.Success(emptyList()),
+            type = BrowseType.OTHER,
+        )
+        viewModelScope.launch {
+            val handle = com.music.bitchord.data.apple.AppleSources.handle() ?: return@launch
+            com.music.bitchord.data.apple.AppleCatalogue
+                .browse(handle.baseUrl, genre, "albums,playlists", 12)
+                .onSuccess { page ->
+                    val shelves = buildList {
+                        val playlists = page.playlists
+                            .mapNotNull { it.shelfItem(handle.configId) }
+                        if (playlists.isNotEmpty()) {
+                            add(
+                                HomeShelf(
+                                    title = text(R.string.playlists),
+                                    subtitle = "",
+                                    items = playlists,
+                                ),
+                            )
+                        }
+                        val albums = page.albums.mapNotNull { it.shelfItem(handle.configId) }
+                        if (albums.isNotEmpty()) {
+                            add(
+                                HomeShelf(
+                                    title = text(R.string.albums),
+                                    subtitle = "",
+                                    items = albums,
+                                ),
+                            )
+                        }
+                    }
+                    setApplePage(browseId, UiState.Success(emptyList()), shelves)
+                }
+        }
+    }
+
     private fun openApplePage(
         browseId: String,
         title: String,

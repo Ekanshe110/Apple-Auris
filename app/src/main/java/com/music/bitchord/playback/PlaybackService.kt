@@ -1080,6 +1080,9 @@ class PlaybackService : MediaLibraryService() {
                 swappingMediaId = null
                 return
             }
+            // What played lately, for the search page's first screen. A
+            // quality swap returns above, so one track is one entry.
+            mediaItem?.toSong()?.let { RecentlyPlayed.record(it) }
 
             // A queue built before the listener marked an act as AI (or hid it)
             // would otherwise still walk straight into that track on the next
