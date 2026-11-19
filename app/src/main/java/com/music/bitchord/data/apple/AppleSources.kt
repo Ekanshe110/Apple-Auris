@@ -463,7 +463,7 @@ internal fun AppleItem.browseIdOf(): String? = when (type.lowercase()) {
  * A song lockup carries the catalogue's own key, so tapping it plays the
  * recording; the rest carry the page their kind opens.
  */
-internal fun AppleEditorialItem.toShelfItem(handle: Handle): ShelfItem? {
+internal fun AppleEditorialItem.toShelfItem(handle: AppleSources.Handle): ShelfItem? {
     if (name.isBlank()) return null
     return when (type.lowercase()) {
         "songs" -> ShelfItem(
@@ -506,7 +506,7 @@ internal fun AppleEditorialItem.toShelfItem(handle: Handle): ShelfItem? {
 }
 
 /** One editorial shelf as a row of the page, or null when it holds nothing. */
-internal fun AppleEditorialShelf.toHomeShelf(handle: Handle): HomeShelf? {
+internal fun AppleEditorialShelf.toHomeShelf(handle: AppleSources.Handle): HomeShelf? {
     val cards = items.mapNotNull { it.toShelfItem(handle) }
     if (cards.isEmpty()) return null
     return HomeShelf(title = title, subtitle = "", items = cards)
