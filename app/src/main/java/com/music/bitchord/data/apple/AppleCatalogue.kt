@@ -236,7 +236,7 @@ object AppleCatalogue {
         )
 
     /** Apple's catalogue genres: the wall its own search page opens with. */
-    suspend fun genres(baseUrl: String, limit: Int = 30): Result<List<AppleGenre>> =
+    suspend fun genres(baseUrl: String, limit: Int = 40): Result<List<AppleGenre>> =
         get(
             baseUrl,
             listOf("search", "genres"),
@@ -254,6 +254,21 @@ object AppleCatalogue {
             listOf("browse", "sections"),
             emptyMap(),
             AppleBrowseSectionList.serializer(),
+        )
+
+    /**
+     * One of Apple's own pages, as the shelves it is actually made of.
+     *
+     * The rows come from Apple's editorial grouping rather than from a search
+     * for a label: a shelf is the shelf the vendor draws, and it refreshes
+     * with the page instead of with this build.
+     */
+    suspend fun editorialPage(baseUrl: String, page: String = "new"): Result<AppleEditorialPage> =
+        get(
+            baseUrl,
+            listOf("browse", "page"),
+            mapOf("page" to page),
+            AppleEditorialPage.serializer(),
         )
 
     /** An Apple artist's albums, as the rows the artist page draws. */
@@ -610,6 +625,33 @@ data class AppleDirectoryEntry(
 data class AppleBrowseSectionList(
     @SerialName("sections") val sections: List<AppleBrowseSection> = emptyList(),
     @SerialName("directory") val directory: List<AppleDirectoryEntry> = emptyList(),
+)
+
+/** One lockup of an editorial shelf: an album, playlist or station. */
+@Serializable
+data class AppleEditorialItem(
+    @SerialName("id") val id: String = "",
+    @SerialName("type") val type: String = "",
+    @SerialName("name") val name: String = "",
+    @SerialName("artistName") val artistName: String = "",
+    @SerialName("artworkURL") val artworkURL: String? = null,
+    @SerialName("url") val url: String? = null,
+)
+
+/** One shelf of an editorial page Apple publishes. */
+@Serializable
+data class AppleEditorialShelf(
+    @SerialName("title") val title: String = "",
+    @SerialName("resourceTypes") val resourceTypes: List<String> = emptyList(),
+    @SerialName("items") val items: List<AppleEditorialItem> = emptyList(),
+)
+
+/** A page Apple publishes — New or Radio — as the shelves it is made of. */
+@Serializable
+data class AppleEditorialPage(
+    @SerialName("page") val page: String = "",
+    @SerialName("updatedAt") val updatedAt: String = "",
+    @SerialName("shelves") val shelves: List<AppleEditorialShelf> = emptyList(),
 )
 
 /** Rows of one kind, as a catalogue route answers them. */

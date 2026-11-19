@@ -230,6 +230,37 @@ internal object AppleSources {
                 )
             }
         }
+        // Apple's own New page: every shelf it publishes, in its order, with
+        // the album and playlist lockups it actually draws. A shelf that only
+        // holds songs or videos is skipped — a song here is a catalogue id,
+        // not something this app can start, and a dead tile is worse than a
+        // row that is not there.
+        val editorial = AppleCatalogue.editorialPage(handle.baseUrl, "new")
+            .getOrNull()?.shelves.orEmpty()
+        var usedEditorial = false
+        for (shelf in editorial) {
+            val items = shelf.items.mapNotNull { row ->
+                val browseId = when (row.type.lowercase()) {
+                    "album" -> ALBUM_PREFIX + row.id
+                    "playlist" -> PAGE_PREFIX + row.id
+                    "station" -> STATION_PREFIX + row.id
+                    else -> null
+                } ?: return@mapNotNull null
+                if (row.name.isBlank()) return@mapNotNull null
+                ShelfItem(
+                    title = row.name,
+                    subtitle = row.artistName,
+                    thumbnailUrl = row.artworkURL,
+                    videoId = null,
+                    browseId = browseId,
+                )
+            }
+            if (items.isNotEmpty()) {
+                usedEditorial = true
+                shelves += HomeShelf(title = shelf.title, subtitle = "", items = items)
+            }
+        }
+        if (usedEditorial) return Result.success(shelves)
         // The catalogue's own rows, as the addon defines them. Nothing here
         // is a list in the app: a row Apple adds is a server edit.
         val browseSections = AppleCatalogue.browsePage(handle.baseUrl)
