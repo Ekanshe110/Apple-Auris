@@ -4774,6 +4774,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // Apple's own pages: a library playlist, an album, an artist. They are
         // read through the installed Apple Music manifest, and the rows they
         // return are Apple's rows — its own titles, covers and catalogue ids.
+        // A station is a queue Apple seeds, not a release. Its tile used to
+        // be a dead end: the prefix was published but nothing read it, so
+        // "Bollywood Radio" and the New page's station shelf drew tiles that
+        // opened nothing. The page shows the tracks the station opens with;
+        // the radio tab is still where a live one is tuned.
+        if (browseId.startsWith(com.music.bitchord.data.apple.AppleSources.STATION_PREFIX)) {
+            val stationId = browseId.removePrefix(
+                com.music.bitchord.data.apple.AppleSources.STATION_PREFIX,
+            )
+            _detailStack.value += DetailPage(
+                browseId = browseId,
+                title = title,
+                subtitle = subtitle,
+                thumbnailUrl = thumbnailUrl,
+                songs = UiState.Loading,
+                type = BrowseType.OTHER,
+            )
+            viewModelScope.launch {
+                val songs = appleStationSongs(stationId)
+                setApplePage(
+                    browseId = browseId,
+                    songs = if (songs.isNullOrEmpty()) {
+                        UiState.Error(text(R.string.spotify_empty_tracks))
+                    } else {
+                        UiState.Success(songs)
+                    },
+                )
+            }
+            return
+        }
         if (browseId.startsWith(com.music.bitchord.data.apple.AppleSources.CPAGE_PREFIX)) {
             openAppleCatalogueRow(
                 ShelfItem(
