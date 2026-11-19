@@ -4774,6 +4774,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // Apple's own pages: a library playlist, an album, an artist. They are
         // read through the installed Apple Music manifest, and the rows they
         // return are Apple's rows — its own titles, covers and catalogue ids.
+        if (browseId.startsWith(com.music.bitchord.data.apple.AppleSources.CPAGE_PREFIX)) {
+            openAppleCatalogueRow(
+                ShelfItem(
+                    title = title,
+                    subtitle = subtitle,
+                    thumbnailUrl = thumbnailUrl,
+                    videoId = null,
+                    browseId = browseId,
+                ),
+            )
+            return
+        }
         if (browseId.startsWith(com.music.bitchord.data.apple.AppleSources.PAGE_PREFIX) ||
             browseId.startsWith(com.music.bitchord.data.apple.AppleSources.ALBUM_PREFIX) ||
             browseId.startsWith(com.music.bitchord.data.apple.AppleSources.ARTIST_PREFIX) ||
@@ -5100,12 +5112,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * A genre tile, opened as the page Apple opens: its playlists and albums.
      */
-    fun openAppleGenre(genre: String) {
-        if (genre.isBlank()) return
-        val browseId = "apple:genre:$genre"
+    fun openAppleGenre(curatorId: String, name: String) {
+        if (name.isBlank()) return
+        val browseId = "apple:genre:$curatorId"
         _detailStack.value += DetailPage(
             browseId = browseId,
-            title = genre,
+            title = name,
             subtitle = "",
             thumbnailUrl = null,
             songs = UiState.Success(emptyList()),
@@ -5113,32 +5125,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         )
         viewModelScope.launch {
             val handle = com.music.bitchord.data.apple.AppleSources.handle() ?: return@launch
-            com.music.bitchord.data.apple.AppleCatalogue
-                .browse(handle.baseUrl, genre, "albums,playlists", 25)
-                .onSuccess { page ->
-                    val shelves = buildList {
-                        val playlists = page.playlists
-                            .mapNotNull { it.shelfItem(handle.configId) }
-                        if (playlists.isNotEmpty()) {
-                            add(
-                                HomeShelf(
-                                    title = text(R.string.playlists),
-                                    subtitle = "",
-                                    items = playlists,
-                                ),
-                            )
-                        }
-                        val albums = page.albums.mapNotNull { it.shelfItem(handle.configId) }
-                        if (albums.isNotEmpty()) {
-                            add(
-                                HomeShelf(
-                                    title = text(R.string.albums),
-                                    subtitle = "",
-                                    items = albums,
-                                ),
-                            )
-                        }
-                    }
+            // The tile is the curator; Apple's page behind it is the grouping
+            // the curator names. The addon resolves one from the other and
+            // returns the sections Apple actually draws, in its own order.
+            com.music.bitchord.data.apple.AppleSources.genrePage(handle, curatorId)
+                .onSuccess { shelves ->
                     setApplePage(browseId, UiState.Success(emptyList()), shelves)
                 }
         }
@@ -5236,7 +5227,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun openAppleCatalogueRow(item: ShelfItem) {
         val browseId = item.browseId ?: return
         val isAlbum = browseId.startsWith(com.music.bitchord.data.apple.AppleSources.ALBUM_PREFIX)
-        val isPlaylist = browseId.startsWith(com.music.bitchord.data.apple.AppleSources.PAGE_PREFIX)
+        val isPlaylist = browseId.startsWith(com.music.bitchord.data.apple.AppleSources.CPAGE_PREFIX)
         if (!isAlbum && !isPlaylist) return
         _detailStack.value += DetailPage(
             browseId = browseId,
@@ -5259,7 +5250,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     if (isAlbum) {
                         com.music.bitchord.data.apple.AppleSources.ALBUM_PREFIX
                     } else {
-                        com.music.bitchord.data.apple.AppleSources.PAGE_PREFIX
+                        com.music.bitchord.data.apple.AppleSources.CPAGE_PREFIX
                     },
                 ),
             )

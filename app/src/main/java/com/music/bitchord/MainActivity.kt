@@ -6059,12 +6059,13 @@ private fun RootPage(
                     com.music.bitchord.ui.screens.GenreTile(
                         name = it.name,
                         artworkUrl = it.artworkURL,
+                        id = it.id,
                     )
                 }
             } else {
                 emptyList()
             },
-            onGenreClick = { genre -> viewModel.openAppleGenre(genre) },
+            onGenreClick = { genre -> viewModel.openAppleGenre(genre.id, genre.name) },
             // The catalogue under the wall is the New page's own shelves: the
             // albums, playlists and stations Apple publishes for this account
             // and storefront, drawn here so the search page is a catalogue and

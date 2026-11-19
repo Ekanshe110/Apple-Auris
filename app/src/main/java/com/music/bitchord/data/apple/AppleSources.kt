@@ -28,6 +28,15 @@ internal object AppleSources {
 
     /** A library playlist, opened as a page of its own. */
     const val PAGE_PREFIX = "apple:page:"
+    /**
+     * A playlist of Apple's catalogue, as opposed to one of the listener's.
+     *
+     * The two are read from different routes — the catalogue's by id, the
+     * library's through the library — and an id from one is not an id in the
+     * other. They were once the same prefix, which opened a catalogue
+     * playlist as a library one and found nothing.
+     */
+    const val CPAGE_PREFIX = "apple:cpage:"
 
     /** An album, opened as a page of its own. */
     const val ALBUM_PREFIX = "apple:album:"
@@ -232,54 +241,16 @@ internal object AppleSources {
             }
         }
         // Apple's own New page: every shelf it publishes, in its order, with
-        // the album and playlist lockups it actually draws. A shelf that only
-        // holds songs or videos is skipped — a song here is a catalogue id,
-        // not something this app can start, and a dead tile is worse than a
-        // row that is not there.
+        // the lockups it actually draws. A song carries the catalogue's own
+        // key, so it plays; albums and playlists open their pages. Only the
+        // rows that are neither — videos, interviews — are left out.
         val editorial = AppleCatalogue.editorialPage(handle.baseUrl, "new")
             .getOrNull()?.shelves.orEmpty()
         var usedEditorial = false
         for (shelf in editorial) {
-            val items = shelf.items.mapNotNull { row ->
-                if (row.name.isBlank()) return@mapNotNull null
-                when (row.type.lowercase()) {
-                    "songs" -> ShelfItem(
-                        title = row.name,
-                        subtitle = row.artistName,
-                        thumbnailUrl = row.artworkURL,
-                        // The catalogue's own key, so tapping the row plays
-                        // the recording rather than opening a page for it.
-                        videoId = SourceRegistry.trackKey(handle.configId, row.id),
-                        browseId = null,
-                    )
-                    "album" -> ShelfItem(
-                        title = row.name,
-                        subtitle = row.artistName,
-                        thumbnailUrl = row.artworkURL,
-                        videoId = null,
-                        browseId = ALBUM_PREFIX + row.id,
-                    )
-                    "playlist" -> ShelfItem(
-                        title = row.name,
-                        subtitle = row.artistName,
-                        thumbnailUrl = row.artworkURL,
-                        videoId = null,
-                        browseId = PAGE_PREFIX + row.id,
-                    )
-                    "station" -> ShelfItem(
-                        title = row.name,
-                        subtitle = row.artistName,
-                        thumbnailUrl = row.artworkURL,
-                        videoId = null,
-                        browseId = STATION_PREFIX + row.id,
-                    )
-                    else -> null
-                }
-            }
-            if (items.isNotEmpty()) {
-                usedEditorial = true
-                shelves += HomeShelf(title = shelf.title, subtitle = "", items = items)
-            }
+            val mapped = shelf.toHomeShelf(handle) ?: continue
+            usedEditorial = true
+            shelves += mapped
         }
         if (usedEditorial) return Result.success(shelves)
         // The catalogue's own rows, as the addon defines them. Nothing here
@@ -291,7 +262,7 @@ internal object AppleSources {
                 handle.baseUrl,
                 section.term,
                 section.types.ifBlank { "playlists" },
-                12,
+                25,
             ).getOrNull()?.playlists.orEmpty()
             if (rows.isEmpty()) continue
             shelves += HomeShelf(
@@ -310,6 +281,18 @@ internal object AppleSources {
         }
         return Result.success(shelves)
     }
+
+    /**
+     * A genre's own page — every section Apple draws on it.
+     *
+     * A tile is an apple-curator and the curator names the grouping that is
+     * the page, so the addon resolves one from the other. The rows are the
+     * vendor's own: its playlists, its new releases, its essential albums.
+     */
+    suspend fun genrePage(handle: Handle, curatorId: String): Result<List<HomeShelf>> =
+        AppleCatalogue.genrePage(handle.baseUrl, curatorId).map { page ->
+            page.shelves.mapNotNull { it.toHomeShelf(handle) }
+        }
 
     /** Apple's search-page genres; empty on an addon without the route. */
     suspend fun genres(handle: Handle): Result<List<AppleGenre>> =
@@ -468,10 +451,65 @@ internal fun AppleItem.shelfItem(
 /** The page this row opens, when it is a page and not a track. */
 internal fun AppleItem.browseIdOf(): String? = when (type.lowercase()) {
     "album" -> AppleSources.ALBUM_PREFIX + id
-    "playlist" -> AppleSources.PAGE_PREFIX + id
+    "playlist" -> AppleSources.CPAGE_PREFIX + id
     "artist" -> AppleSources.ARTIST_PREFIX + id
     "station" -> AppleSources.STATION_PREFIX + id
     else -> null
+}
+
+/**
+ * One lockup of an editorial shelf, as the card this app draws.
+ *
+ * A song lockup carries the catalogue's own key, so tapping it plays the
+ * recording; the rest carry the page their kind opens.
+ */
+internal fun AppleEditorialItem.toShelfItem(handle: Handle): ShelfItem? {
+    if (name.isBlank()) return null
+    return when (type.lowercase()) {
+        "songs" -> ShelfItem(
+            title = name,
+            subtitle = artistName,
+            thumbnailUrl = artworkURL,
+            videoId = SourceRegistry.trackKey(handle.configId, id),
+            browseId = null,
+        )
+        "album" -> ShelfItem(
+            title = name,
+            subtitle = artistName,
+            thumbnailUrl = artworkURL,
+            videoId = null,
+            browseId = AppleSources.ALBUM_PREFIX + id,
+        )
+        "playlist" -> ShelfItem(
+            title = name,
+            subtitle = artistName,
+            thumbnailUrl = artworkURL,
+            videoId = null,
+            browseId = AppleSources.CPAGE_PREFIX + id,
+        )
+        "station" -> ShelfItem(
+            title = name,
+            subtitle = artistName,
+            thumbnailUrl = artworkURL,
+            videoId = null,
+            browseId = AppleSources.STATION_PREFIX + id,
+        )
+        "artist" -> ShelfItem(
+            title = name,
+            subtitle = artistName,
+            thumbnailUrl = artworkURL,
+            videoId = null,
+            browseId = AppleSources.ARTIST_PREFIX + id,
+        )
+        else -> null
+    }
+}
+
+/** One editorial shelf as a row of the page, or null when it holds nothing. */
+internal fun AppleEditorialShelf.toHomeShelf(handle: Handle): HomeShelf? {
+    val cards = items.mapNotNull { it.toShelfItem(handle) }
+    if (cards.isEmpty()) return null
+    return HomeShelf(title = title, subtitle = "", items = cards)
 }
 
 /** The page this row opens, as the model the detail stack holds. */

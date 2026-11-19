@@ -302,6 +302,21 @@ object AppleCatalogue {
             AppleEditorialPage.serializer(),
         )
 
+    /**
+     * A genre's own page, as the sections Apple draws on it.
+     *
+     * The tile is an apple-curator; the addon resolves the grouping behind it
+     * and republishes that page's shelves — playlists, new releases, essential
+     * albums, artists — without capping any of them.
+     */
+    suspend fun genrePage(baseUrl: String, curatorId: String): Result<AppleEditorialPage> =
+        get(
+            baseUrl,
+            listOf("browse", "genre"),
+            mapOf("id" to curatorId),
+            AppleEditorialPage.serializer(),
+        )
+
     /** An Apple artist's albums, as the rows the artist page draws. */
     suspend fun artistAlbums(baseUrl: String, artistId: String): Result<List<AppleItem>> =
         get(

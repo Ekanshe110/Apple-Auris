@@ -145,7 +145,7 @@ fun SearchScreen(
     onHistoryClear: () -> Unit,
     /** Apple's genre wall, shown where the page is otherwise empty. */
     genres: List<GenreTile> = emptyList(),
-    onGenreClick: (String) -> Unit = {},
+    onGenreClick: (GenreTile) -> Unit = {},
     /**
      * The catalogue beneath the genre wall, drawn only while the field is at
      * rest. Once the field is tapped the page is about the search — history,
@@ -1062,7 +1062,7 @@ private fun SearchResult.lazyContentType(): String = when (this) {
  * stable gradient of its own rather than a hole, so the wall is whole.
  */
 @Composable
-private fun GenreGrid(genres: List<GenreTile>, onGenreClick: (String) -> Unit) {
+private fun GenreGrid(genres: List<GenreTile>, onGenreClick: (GenreTile) -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -1074,7 +1074,7 @@ private fun GenreGrid(genres: List<GenreTile>, onGenreClick: (String) -> Unit) {
                     GenreCard(
                         genre = genre,
                         modifier = Modifier.weight(1f),
-                        onClick = { onGenreClick(genre.name) },
+                        onClick = { onGenreClick(genre) },
                     )
                     if (index != row.lastIndex) Spacer(Modifier.width(8.dp))
                 }
@@ -1135,7 +1135,12 @@ private fun GenreCard(genre: GenreTile, modifier: Modifier, onClick: () -> Unit)
 }
 
 /** One genre tile as the search page draws it. */
-data class GenreTile(val name: String, val artworkUrl: String? = null)
+data class GenreTile(
+    val name: String,
+    val artworkUrl: String? = null,
+    /** The curator id behind the tile, when the addon published one. */
+    val id: String = "",
+)
 
 /** Apple's tile palette, used when the addon has no artwork for a genre. */
 private val GENRE_COLORS = listOf(
