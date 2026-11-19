@@ -933,6 +933,10 @@ private fun BitChordApp(
         if (nav.selectedTab == TAB_SEARCH) {
             searchVisualActive = true
             viewModel.ensureAppleGenresLoaded()
+            // The wall is only half the page: the catalogue rows beneath it
+            // are the same New page the tab beside this one draws, so they are
+            // read once and shared rather than fetched twice.
+            viewModel.ensureAppleBrowseLoaded()
         } else {
             searchVisualActive = false
             searchKeyboardActive = false
@@ -6061,6 +6065,34 @@ private fun RootPage(
                 emptyList()
             },
             onGenreClick = { genre -> viewModel.openAppleGenre(genre) },
+            // The catalogue under the wall is the New page's own shelves: the
+            // albums, playlists and stations Apple publishes for this account
+            // and storefront, drawn here so the search page is a catalogue and
+            // not only a keyboard.
+            catalogue = if (appleUi) {
+                (viewModel.appleBrowse.collectAsStateWithLifecycle().value as? UiState.Success)
+                    ?.data.orEmpty()
+            } else {
+                emptyList()
+            },
+            onCatalogueClick = { item ->
+                val videoId = item.videoId
+                if (videoId != null) {
+                    // A song lockup is a recording, not a page: start it the
+                    // way a search hit starts, as the seed of its own station.
+                    pageActions.playRadio(
+                        Song(
+                            videoId = videoId,
+                            title = item.title,
+                            artist = item.subtitle,
+                            thumbnailUrl = item.thumbnailUrl,
+                        ),
+                        QueueSource(inputs.searchLabel, PlaybackSourceType.SEARCH),
+                    )
+                } else {
+                    viewModel.openAppleCatalogueRow(item)
+                }
+            },
             recentlyPlayed = if (appleUi) {
                 remember(player.song?.videoId) { RecentlyPlayed.recent(10) }
             } else {

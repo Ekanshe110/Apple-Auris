@@ -104,7 +104,7 @@ internal object AppleSources {
         collection: String,
         collectionId: String,
     ): Result<List<AppleItem>> =
-        AppleCatalogue.libraryTracks(handle.baseUrl, collection, collectionId).map { it.tracks }
+        AppleCatalogue.libraryTracksAll(handle.baseUrl, collection, collectionId)
 
     /**
      * Apple's album, playlist or artist page, as rows.
@@ -127,8 +127,9 @@ internal object AppleSources {
         query: String,
         types: String = "songs,albums,playlists,artists",
         limit: Int = 25,
+        offset: Int = 0,
     ): Result<List<SearchResult>> =
-        AppleCatalogue.search(handle.baseUrl, query, types, limit).map { response ->
+        AppleCatalogue.search(handle.baseUrl, query, types, limit, offset).map { response ->
             buildList {
                 response.tracks.forEach { item ->
                     add(SearchResult.Track(item.song(handle.configId)))
@@ -240,20 +241,40 @@ internal object AppleSources {
         var usedEditorial = false
         for (shelf in editorial) {
             val items = shelf.items.mapNotNull { row ->
-                val browseId = when (row.type.lowercase()) {
-                    "album" -> ALBUM_PREFIX + row.id
-                    "playlist" -> PAGE_PREFIX + row.id
-                    "station" -> STATION_PREFIX + row.id
-                    else -> null
-                } ?: return@mapNotNull null
                 if (row.name.isBlank()) return@mapNotNull null
-                ShelfItem(
-                    title = row.name,
-                    subtitle = row.artistName,
-                    thumbnailUrl = row.artworkURL,
-                    videoId = null,
-                    browseId = browseId,
-                )
+                when (row.type.lowercase()) {
+                    "songs" -> ShelfItem(
+                        title = row.name,
+                        subtitle = row.artistName,
+                        thumbnailUrl = row.artworkURL,
+                        // The catalogue's own key, so tapping the row plays
+                        // the recording rather than opening a page for it.
+                        videoId = SourceRegistry.trackKey(handle.configId, row.id),
+                        browseId = null,
+                    )
+                    "album" -> ShelfItem(
+                        title = row.name,
+                        subtitle = row.artistName,
+                        thumbnailUrl = row.artworkURL,
+                        videoId = null,
+                        browseId = ALBUM_PREFIX + row.id,
+                    )
+                    "playlist" -> ShelfItem(
+                        title = row.name,
+                        subtitle = row.artistName,
+                        thumbnailUrl = row.artworkURL,
+                        videoId = null,
+                        browseId = PAGE_PREFIX + row.id,
+                    )
+                    "station" -> ShelfItem(
+                        title = row.name,
+                        subtitle = row.artistName,
+                        thumbnailUrl = row.artworkURL,
+                        videoId = null,
+                        browseId = STATION_PREFIX + row.id,
+                    )
+                    else -> null
+                }
             }
             if (items.isNotEmpty()) {
                 usedEditorial = true

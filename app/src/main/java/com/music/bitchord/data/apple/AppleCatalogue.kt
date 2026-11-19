@@ -175,18 +175,43 @@ object AppleCatalogue {
     /**
      * The rows of one library collection — one playlist, one album, or the
      * songs of a page.
+     *
+     * Paged like any other collection: a long playlist is walked to its end
+     * by [libraryTracksAll], not cut at the first page the route returns.
      */
     suspend fun libraryTracks(
         baseUrl: String,
         collection: String,
         collectionId: String,
+        offset: Int = 0,
+        limit: Int = 100,
     ): Result<AppleLibraryPage> =
         get(
             baseUrl,
             listOf("library", collection, collectionId, "tracks"),
-            emptyMap(),
+            mapOf("offset" to offset.toString(), "limit" to limit.toString()),
             AppleLibraryPage.serializer(),
         )
+
+    /** Every track of one library playlist or album, not just the first page. */
+    suspend fun libraryTracksAll(
+        baseUrl: String,
+        collection: String,
+        collectionId: String,
+        pageSize: Int = 100,
+    ): Result<List<AppleItem>> {
+        val out = mutableListOf<AppleItem>()
+        var offset = 0
+        while (true) {
+            val page = libraryTracks(baseUrl, collection, collectionId, offset, pageSize)
+                .getOrElse { failure -> return Result.failure(failure) }
+            out += page.tracks
+            if (!page.hasMore || page.tracks.isEmpty()) return Result.success(out)
+            val next = page.nextOffset ?: (offset + page.tracks.size)
+            if (next <= offset) return Result.success(out)
+            offset = next
+        }
+    }
 
     /**
      * Apple's album, playlist or artist page, as rows.
@@ -211,11 +236,17 @@ object AppleCatalogue {
         query: String,
         types: String = "songs,albums,playlists,artists",
         limit: Int = 20,
+        offset: Int = 0,
     ): Result<AppleSearchResponse> =
         get(
             baseUrl,
             listOf("search"),
-            mapOf("q" to query, "types" to types, "limit" to limit.toString()),
+            mapOf(
+                "q" to query,
+                "types" to types,
+                "limit" to limit.toString(),
+                "offset" to offset.toString(),
+            ),
             AppleSearchResponse.serializer(),
         )
 

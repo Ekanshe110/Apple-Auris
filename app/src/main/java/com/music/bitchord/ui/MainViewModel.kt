@@ -4203,14 +4203,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         handle = handle,
                         query = request.query,
                         types = types,
+                        limit = APPLE_SEARCH_PAGE,
                     )
                     if (request.requestId != newestRequestId.get()) return@collectLatest
                     _results.value = page.fold(
                         onSuccess = { rows ->
+                            val songs = rows.count { it is SearchResult.Track }
                             val published = publishedRows(
                                 rows = rows,
                                 continuation = null,
-                                nextOffset = null,
+                                nextOffset = if (songs >= APPLE_SEARCH_PAGE) songs else null,
                                 key = key,
                                 requestId = request.requestId,
                                 filter = request.filter,
@@ -4275,6 +4277,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             loadMoreSpotifyResults(session)
             return
         }
+        if (session.source == SearchSource.APPLE) {
+            loadMoreAppleResults(session)
+            return
+        }
         val token = session.continuation ?: return
         _searchLoadingMore.value = true
         viewModelScope.launch {
@@ -4301,6 +4307,57 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * session carries the offset the next page starts at. The rows are
      * merged the same way YouTube Music's are.
      */
+    /**
+     * The next page of an Apple search.
+     *
+     * The addon pages by offset, so the session carries how many song rows are
+     * already on screen. Albums, playlists and artists come with the first
+     * page only; the offset walks the songs.
+     */
+    private fun loadMoreAppleResults(session: SearchSession) {
+        val offset = session.nextOffset ?: return
+        _searchLoadingMore.value = true
+        viewModelScope.launch {
+            val handle = com.music.bitchord.data.apple.AppleSources.handle()
+            val next = if (handle == null) {
+                Result.failure(IllegalStateException("no Apple manifest"))
+            } else {
+                val types = when (session.filter) {
+                    SearchFilter.SONGS -> "songs"
+                    SearchFilter.ALBUMS -> "albums"
+                    SearchFilter.PLAYLISTS -> "playlists"
+                    SearchFilter.ARTISTS -> "artists"
+                    else -> "songs"
+                }
+                com.music.bitchord.data.apple.AppleSources.search(
+                    handle = handle,
+                    query = session.query,
+                    types = types,
+                    limit = APPLE_SEARCH_PAGE,
+                    offset = offset,
+                )
+            }
+            val stillCurrent = searchSession == session && session.requestId == newestRequestId.get()
+            if (stillCurrent) {
+                next.onSuccess { rows ->
+                    val current = (_results.value as? UiState.Success)?.data.orEmpty()
+                    val merged = (current + rows)
+                        .distinctBy(::searchResultKey)
+                        .withoutBlockedArtists()
+                    val songs = merged.count { it is SearchResult.Track }
+                    val more = rows.count { it is SearchResult.Track } >= APPLE_SEARCH_PAGE
+                    searchCache.put(
+                        session.key,
+                        SearchCacheEntry(merged, null, if (more) songs else null),
+                    )
+                    searchSession = session.copy(nextOffset = if (more) songs else null)
+                    _results.value = UiState.Success(merged)
+                }
+                _searchLoadingMore.value = false
+            }
+        }
+    }
+
     private fun loadMoreSpotifyResults(session: SearchSession) {
         val offset = session.nextOffset ?: return
         _searchLoadingMore.value = true
@@ -4562,6 +4619,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         /** How many tracks YouTube's edit endpoint takes in one request. */
         private const val ADD_TO_PLAYLIST_BATCH = 50
+
+        /**
+         * How many Apple song rows one search page asks for.
+         *
+         * The addon walks Apple's twenty-five-row pages on its side, so this
+         * is the page the screen scrolls into, not the request behind it.
+         */
+        private const val APPLE_SEARCH_PAGE = 100
 
         /** How many Spotify tracks are looked up on YouTube Music at once. */
         private const val SPOTIFY_MATCH_PARALLELISM = 6
@@ -5049,7 +5114,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val handle = com.music.bitchord.data.apple.AppleSources.handle() ?: return@launch
             com.music.bitchord.data.apple.AppleCatalogue
-                .browse(handle.baseUrl, genre, "albums,playlists", 12)
+                .browse(handle.baseUrl, genre, "albums,playlists", 25)
                 .onSuccess { page ->
                     val shelves = buildList {
                         val playlists = page.playlists
@@ -5158,6 +5223,58 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     onFailure = { failure -> UiState.Error(failure.friendly()) },
                 ),
                 sections = sections,
+            )
+        }
+    }
+
+    /**
+     * Opens one catalogue lockup the search page draws — an album or a
+     * playlist Apple published. The row's page is read from the catalogue,
+     * not from the listener's library: the wall is Apple's catalogue, and an
+     * id that came from it is not the copy the library holds.
+     */
+    fun openAppleCatalogueRow(item: ShelfItem) {
+        val browseId = item.browseId ?: return
+        val isAlbum = browseId.startsWith(com.music.bitchord.data.apple.AppleSources.ALBUM_PREFIX)
+        val isPlaylist = browseId.startsWith(com.music.bitchord.data.apple.AppleSources.PAGE_PREFIX)
+        if (!isAlbum && !isPlaylist) return
+        _detailStack.value += DetailPage(
+            browseId = browseId,
+            title = item.title,
+            subtitle = item.subtitle,
+            thumbnailUrl = item.thumbnailUrl,
+            songs = UiState.Loading,
+            type = if (isAlbum) BrowseType.ALBUM else BrowseType.PLAYLIST,
+        )
+        viewModelScope.launch {
+            val handle = com.music.bitchord.data.apple.AppleSources.handle()
+            if (handle == null) {
+                setApplePage(browseId, UiState.Error(text(R.string.provider_apple_manifest_missing_subtitle)))
+                return@launch
+            }
+            val rows = com.music.bitchord.data.apple.AppleSources.catalogTracks(
+                handle = handle,
+                kind = if (isAlbum) "albums" else "playlists",
+                id = browseId.removePrefix(
+                    if (isAlbum) {
+                        com.music.bitchord.data.apple.AppleSources.ALBUM_PREFIX
+                    } else {
+                        com.music.bitchord.data.apple.AppleSources.PAGE_PREFIX
+                    },
+                ),
+            )
+            setApplePage(
+                browseId = browseId,
+                songs = rows.fold(
+                    onSuccess = { items ->
+                        if (items.isEmpty()) {
+                            UiState.Error(text(R.string.spotify_empty_tracks))
+                        } else {
+                            UiState.Success(items.map { it.song(handle.configId) })
+                        }
+                    },
+                    onFailure = { failure -> UiState.Error(failure.friendly()) },
+                ),
             )
         }
     }

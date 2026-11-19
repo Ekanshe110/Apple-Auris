@@ -52,11 +52,15 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -69,6 +73,8 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import coil3.compose.AsyncImage
 import com.music.bitchord.data.model.BrowseItem
 import com.music.bitchord.data.model.BrowseType
+import com.music.bitchord.data.model.HomeShelf
+import com.music.bitchord.data.model.ShelfItem
 import com.music.bitchord.data.model.ROW_ART_PX
 import com.music.bitchord.data.model.SearchFilter
 import com.music.bitchord.data.model.artworkAt
@@ -85,6 +91,7 @@ import com.music.bitchord.ui.components.RowMoreButton
 import com.music.bitchord.ui.components.PlayingAccent
 import com.music.bitchord.ui.components.ROW_DIVIDER_INSET
 import com.music.bitchord.ui.components.SearchField
+import com.music.bitchord.ui.components.ShelfRow
 import com.music.bitchord.ui.components.SongRow
 import com.music.bitchord.ui.components.SearchPlayingBars
 import com.music.bitchord.ui.components.thumbnailBorder
@@ -139,6 +146,13 @@ fun SearchScreen(
     /** Apple's genre wall, shown where the page is otherwise empty. */
     genres: List<GenreTile> = emptyList(),
     onGenreClick: (String) -> Unit = {},
+    /**
+     * The catalogue beneath the genre wall, drawn only while the field is at
+     * rest. Once the field is tapped the page is about the search — history,
+     * the source selector and what was typed — not about browsing.
+     */
+    catalogue: List<HomeShelf> = emptyList(),
+    onCatalogueClick: (ShelfItem) -> Unit = {},
     /** The tracks that played most recently, newest first. */
     recentlyPlayed: List<Song> = emptyList(),
     /** Localised heading for the recently-played rows. */
@@ -176,6 +190,14 @@ fun SearchScreen(
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    // Apple's search page is two pages in one: the wall of genres while the
+    // field rests, and the search itself — history, source, results — from the
+    // moment the field is tapped. The split is the field's focus, not the
+    // presence of a query: an empty field that has been tapped is still a
+    // search being started, and a wall that suddenly replaced the history
+    // under the cursor would be the wrong page.
+    var fieldActive by remember { mutableStateOf(false) }
+    val searching = fieldActive || query.isNotEmpty()
     // Tapping the search tab from the nav bar sets focusRequested;
     // respond by focusing the field and opening the keyboard.
     LaunchedEffect(focusRequested) {
@@ -219,22 +241,35 @@ fun SearchScreen(
         // the search field sits cleanly below the bar instead of overlapping it.
         Column(modifier = Modifier.padding(top = topPadding)) {
             if (showField) {
-                SearchField(
-                    query = query,
-                    onQueryChange = onQueryChange,
-                    onSubmit = onSubmit,
-                    focusRequester = focusRequester,
-                    placeholder = if (searchingLibrary) {
-                        stringResource(Res.string.search_library_hint)
-                    } else {
-                        stringResource(Res.string.search_hint)
+                Box(
+                    Modifier.onFocusChanged { state ->
+                        // hasFocus covers the field's own children (the clear
+                        // button, the cursor) so the page does not flip back
+                        // to the wall while one of them is held.
+                        fieldActive = state.isFocused || state.hasFocus
                     },
-                    modifier = Modifier.padding(start = PAGE_GUTTER, end = PAGE_GUTTER, bottom = 4.dp),
-                )
+                ) {
+                    SearchField(
+                        query = query,
+                        onQueryChange = onQueryChange,
+                        onSubmit = onSubmit,
+                        focusRequester = focusRequester,
+                        placeholder = if (searchingLibrary) {
+                            stringResource(Res.string.search_library_hint)
+                        } else {
+                            stringResource(Res.string.search_hint)
+                        },
+                        modifier = Modifier.padding(start = PAGE_GUTTER, end = PAGE_GUTTER, bottom = 4.dp),
+                    )
+                }
             }
             if (sourceSwitcher != null) {
+                // The source belongs to the search, not to the wall: Apple,
+                // Spotify, YouTube and the device's own library are choices
+                // about what a query is asked of, so they sit under the field
+                // only once the listener has gone to search.
                 AnimatedVisibility(
-                    visible = query.isEmpty(),
+                    visible = searching && query.isEmpty(),
                     enter = fadeIn() + expandVertically(),
                     exit = fadeOut() + shrinkVertically(),
                 ) {
@@ -296,29 +331,67 @@ fun SearchScreen(
                     }
                 }
                 results == null -> {
-                    if (recentlyPlayed.isNotEmpty()) {
-                        recentlyPlayedRows(
-                            songs = recentlyPlayed,
-                            title = recentlyPlayedTitle,
-                            currentSong = currentSong,
-                            isPlaying = isPlaying,
-                            onClick = { index -> onSongClick(recentlyPlayed, index) },
-                        )
-                    }
-                    if (history.isNotEmpty()) {
-                        recentSearches(
-                            history = history,
-                            currentSong = currentSong,
-                            isPlaying = isPlaying,
-                            onClick = onHistoryClick,
-                            onRemove = onHistoryRemove,
-                            onClear = onHistoryClear,
-                        )
+                    if (searching) {
+                        if (recentlyPlayed.isNotEmpty()) {
+                            recentlyPlayedRows(
+                                songs = recentlyPlayed,
+                                title = recentlyPlayedTitle,
+                                currentSong = currentSong,
+                                isPlaying = isPlaying,
+                                onClick = { index -> onSongClick(recentlyPlayed, index) },
+                            )
+                        }
+                        if (history.isNotEmpty()) {
+                            recentSearches(
+                                history = history,
+                                currentSong = currentSong,
+                                isPlaying = isPlaying,
+                                onClick = onHistoryClick,
+                                onRemove = onHistoryRemove,
+                                onClear = onHistoryClear,
+                            )
+                        }
+                        if (history.isEmpty() && recentlyPlayed.isEmpty()) {
+                            item { MessageState(stringResource(Res.string.search_empty)) }
+                        }
                     }
                     if (genres.isNotEmpty()) {
                         item { GenreGrid(genres = genres, onGenreClick = onGenreClick) }
                     }
-                    if (history.isEmpty() && genres.isEmpty() && recentlyPlayed.isEmpty()) {
+                    if (!searching && catalogue.isNotEmpty()) {
+                        catalogue.forEach { shelf ->
+                            if (shelf.items.isEmpty()) return@forEach
+                            item(key = "catalogue:heading:${shelf.title}") {
+                                Text(
+                                    text = shelf.title,
+                                    modifier = Modifier.padding(
+                                        start = PAGE_GUTTER,
+                                        end = PAGE_GUTTER,
+                                        top = 18.dp,
+                                        bottom = 8.dp,
+                                    ),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                            }
+                            item(key = "catalogue:row:${shelf.title}") {
+                                ShelfRow(
+                                    contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    itemsIndexed(
+                                        items = shelf.items,
+                                        key = { index, entry ->
+                                            "catalogue:${shelf.title}:${entry.browseId ?: index}"
+                                        },
+                                    ) { _, entry ->
+                                        CatalogueCard(entry) { onCatalogueClick(entry) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (genres.isEmpty() && catalogue.isEmpty() && !searching) {
                         item { MessageState(stringResource(Res.string.search_empty)) }
                     }
                 }
@@ -1147,5 +1220,56 @@ private fun LazyListScope.recentlyPlayedRows(
                 )
             }
         }
+    }
+}
+
+/**
+ * One lockup of the catalogue row under the genre wall.
+ *
+ * A square tile with its two lines, the shape Apple's browse rows use. The
+ * card opens whatever the shelf said the row opens — an album's page, a
+ * playlist's page, a station.
+ */
+@Composable
+private fun CatalogueCard(item: ShelfItem, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .width(150.dp)
+            .clickable(onClick = onClick),
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(RoundedCornerShape(10.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+        ) {
+            if (item.thumbnailUrl != null) {
+                AsyncImage(
+                    model = item.thumbnailUrl,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = item.title,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (item.subtitle.isNotBlank()) {
+            Text(
+                text = item.subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.height(4.dp))
     }
 }
